@@ -203,3 +203,102 @@ Git commands after Stage 2 (Yes, commit now):
 Note:
   If you modified other files intentionally in Stage 2, include them in git add.
   If .dockerignore is outside flask-cicd-app, move/copy it into flask-cicd-app first.
+
+
+================================================================================
+                    STAGE 3: JENKINS CI PIPELINE (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Created Jenkinsfile (declarative pipeline)
+  - Configured Jenkins job: "flask-cicd-pipeline" (Pipeline script from SCM)
+  - Connected to GitHub repo: https://github.com/adityaverma4444/ci-cd-app.git
+  - Script Path: flask-cicd-app/Jenkinsfile (because repo root is P1/, not flask-cicd-app/)
+  - Used Docker agent for Python stages (Jenkins doesn't have Python installed)
+  - Added pip-cache volume for faster builds
+
+Jenkinsfile stages explained:
+  1) Checkout        → Pulls code from GitHub (checkout scm)
+  2) Install & Test  → Runs inside python:3.12-slim Docker container
+                        pip install + pytest
+                        Uses dir('flask-cicd-app') because code is in subfolder
+  3) Docker Build    → Builds app image tagged with build number + latest
+  4) Post            → Prints success/failure message after all stages
+
+Errors we hit and fixed:
+  1) "Unable to find Jenkinsfile"
+     Cause: File was named "Jenkins" instead of "Jenkinsfile"
+     Fix: Renamed to exact "Jenkinsfile"
+
+  2) "Unable to find Jenkinsfile" (again)
+     Cause: Script Path in Jenkins was "Jenkinsfile" but file is at flask-cicd-app/Jenkinsfile
+     Fix: Changed Script Path to "flask-cicd-app/Jenkinsfile"
+
+  3) "pip: not found" (exit code 127)
+     Cause: Jenkins container doesn't have Python installed
+     Fix: Used Docker agent { docker { image 'python:3.12-slim' } }
+     This spins up a temp Python container for that stage only
+
+VOLUME CONCEPT (used in Jenkinsfile):
+  args '-v pip-cache:/root/.cache/pip'
+
+  What is a Docker volume?
+    - A volume is persistent storage that survives container restarts/removal.
+    - Containers are ephemeral (temporary) — when removed, all data inside is lost.
+    - Volumes let you keep data between container runs.
+
+  Why use it here?
+    - Without volume: pip downloads Flask, pytest etc EVERY build (~10 sec each time).
+    - With volume: pip cache is saved. Next build reuses cached packages. Much faster.
+
+  Types of volumes (interview):
+    - Named volume:   docker run -v my-vol:/data         → Docker manages storage location
+    - Bind mount:     docker run -v /host/path:/data     → You control exact host path
+    - tmpfs mount:    docker run --tmpfs /data            → In-memory only, lost on stop
+
+  Interview Q: "What is a Docker volume?"
+    "A volume is persistent storage managed by Docker that outlives containers.
+     We use it to cache build dependencies between CI runs so pip/npm/maven
+     don't re-download everything on each build."
+
+Jenkins job configuration (for reference):
+  - Job type: Pipeline
+  - Definition: Pipeline script from SCM
+  - SCM: Git
+  - Repository URL: https://github.com/adityaverma4444/ci-cd-app.git
+  - Branch: */main
+  - Script Path: flask-cicd-app/Jenkinsfile
+  - Credentials: none (public repo)
+
+Key Jenkins concepts (interview):
+  - Declarative vs Scripted pipeline:
+      Declarative = pipeline { } block, structured, easier to read (we use this)
+      Scripted = node { } block, full Groovy, more flexible but harder
+
+  - agent any vs agent none vs agent docker:
+      any    = run on Jenkins master or any connected node
+      none   = don't assign globally, each stage picks its own
+      docker = spin up a container from given image for that stage
+
+  - Fail-fast behavior:
+      If any stage fails, remaining stages are SKIPPED.
+      Post block still runs (for notifications/cleanup).
+      Exit code 127 = "command not found" in Linux.
+
+  - BUILD_NUMBER:
+      Auto-incremented by Jenkins (1, 2, 3...).
+      Used to tag Docker images for traceability.
+
+  - checkout scm:
+      Pulls code from the SCM (Git) configured in the Jenkins job.
+
+Interview 30-sec answer for Stage 3:
+  "I created a declarative Jenkinsfile with three stages: checkout, test, and
+   Docker build. Tests run inside a python:3.12-slim Docker agent so Jenkins
+   stays clean. I used a named volume for pip cache to speed up builds. If any
+   stage fails, Jenkins skips the rest and triggers the post-failure block."
+
+Git commands after Stage 3:
+  git add Jenkinsfile
+  git commit -m "Stage 3: Add Jenkinsfile with Docker agent and pip cache volume"
+  git push origin main
