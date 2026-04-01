@@ -156,3 +156,50 @@ Bonus Topics (awareness level):
  testing, containerization, and deployment."
 
 ================================================================================
+
+
+                    STAGE 2: DOCKER (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Created Dockerfile to containerize Flask app
+  - Built image: flask-cicd-app:stage2
+  - Ran container on host port 5000
+  - Verified app and health endpoints from container
+
+Commands used in Stage 2:
+  1) docker build -t flask-cicd-app:stage2 .
+     Why: Builds Docker image from Dockerfile and tags it as stage2.
+
+  2) docker run -d -p 5000:5000 --name flask-cicd-container flask-cicd-app:stage2
+     Why: Runs container in detached mode and maps host 5000 -> container 5000.
+
+  3) docker ps
+     Why: Confirms container is running and port mapping is correct.
+
+  4) curl -s http://localhost:5000/
+     Expected: {"message":"Hello from CI/CD Pipeline!","status":"running"}
+     Why: Validates application endpoint from inside Docker runtime.
+
+  5) curl -s http://localhost:5000/health
+     Expected: {"status":"healthy"}
+     Why: Validates health endpoint (important for probes/checks in K8s later).
+
+  6) docker images | findstr flask
+     Why: Confirms image exists locally with tag stage2.
+
+Interview talking points from Stage 2:
+  - Dockerfile layer caching: copy requirements.txt before source code.
+  - EXPOSE documents app port; actual host binding is done by -p.
+  - CMD starts app process in container.
+  - .dockerignore helps reduce context size and image bloat.
+
+Git commands after Stage 2 (Yes, commit now):
+  git status
+  git add Dockerfile .dockerignore
+  git commit -m "Stage 2: Add Dockerfile and container run validation"
+  git push origin main
+
+Note:
+  If you modified other files intentionally in Stage 2, include them in git add.
+  If .dockerignore is outside flask-cicd-app, move/copy it into flask-cicd-app first.
