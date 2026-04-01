@@ -313,3 +313,68 @@ Git commands after Stage 3:
   git add Jenkinsfile
   git commit -m "Stage 3: Add Jenkinsfile with Docker agent and pip cache volume"
   git push origin main
+
+Stage 3 final status:
+  - Pipeline executed successfully after fixes.
+  - Key learning: most CI failures are environment/path/permissions issues, not code logic.
+  - Final resolved chain:
+      Jenkinsfile not found -> fixed filename + Script Path
+      pip not found -> used Python Docker agent
+      pip permission denied -> added --user root for CI container
+
+
+================================================================================
+                    STAGE 4: GITHUB WEBHOOK (NEXT)
+================================================================================
+
+Goal:
+  Auto-trigger Jenkins build whenever code is pushed to GitHub.
+
+Why this stage matters:
+  - Removes manual "Build Now"
+  - Makes CI event-driven
+  - This is the real-world CI trigger pattern
+
+Pre-checks:
+  - Jenkins job already works with manual Build Now (done)
+  - GitHub repo is reachable from Jenkins (done)
+  - Jenkins has URL accessible from GitHub
+
+Webhook setup (GitHub):
+  1) Open repo -> Settings -> Webhooks -> Add webhook
+  2) Payload URL:
+       http://<your-jenkins-host>:8080/github-webhook/
+     For local machine testing, expose Jenkins with ngrok:
+       ngrok http 8080
+     Then use:
+       https://<ngrok-id>.ngrok-free.app/github-webhook/
+  3) Content type: application/json
+  4) Which events: Just the push event
+  5) Active: checked
+  6) Save webhook
+
+Jenkins job setup:
+  - Job -> Configure -> Build Triggers
+  - Enable: GitHub hook trigger for GITScm polling
+  - Save
+
+Validation test:
+  1) Make a small commit (e.g., comment in notes or README)
+  2) git push origin main
+  3) Check Jenkins build queue/history
+  4) Build should start automatically without clicking Build Now
+
+Common webhook issues:
+  - 404/timeout from GitHub:
+      Jenkins not publicly reachable (use ngrok/localtunnel)
+  - 403 No valid crumb:
+      Usually wrong endpoint path; must end with /github-webhook/
+  - No build trigger:
+      Build trigger checkbox not enabled in Jenkins job
+  - Secret mismatch:
+      If using secret, configure same secret on both GitHub and Jenkins
+
+Interview 30-sec answer for Stage 4:
+  "I configured a GitHub webhook to call Jenkins /github-webhook/ endpoint.
+   On every push to main, Jenkins auto-starts the CI pipeline. This removes
+   manual triggers and gives immediate feedback to developers."
