@@ -1,0 +1,158 @@
+================================================================================
+                    CI/CD PIPELINE PROJECT - COMPLETE ROADMAP
+================================================================================
+
+PROJECT: flask-cicd-app
+TECH STACK: Python Flask, Git, Docker, Jenkins, Webhook, Kubernetes (Minikube)
+
+================================================================================
+                         STAGE-BY-STAGE ROADMAP
+================================================================================
+
+Stage 1: Python App + Git          → Create Flask app, push to GitHub
+Stage 2: Dockerfile                → Containerize the app
+Stage 3: Jenkinsfile (CI Pipeline) → Build → Test → Docker Build → Push
+Stage 4: GitHub Webhook            → Auto-trigger Jenkins on git push
+Stage 5: Kubernetes + Minikube     → Deploy using deployment.yaml & service.yaml
+Stage 6: Full CI/CD Pipeline       → End-to-end: push code → app deployed
+
+================================================================================
+                    PROJECT STRUCTURE (Final)
+================================================================================
+
+flask-cicd-app/
+├── app.py                  # Flask REST API
+├── requirements.txt        # Python dependencies
+├── test_app.py             # Unit tests
+├── Dockerfile              # Stage 2
+├── Jenkinsfile             # Stage 3
+├── k8s/
+│   ├── deployment.yaml     # Stage 5
+│   └── service.yaml        # Stage 5
+└── README.md
+
+================================================================================
+                    STAGE 1: PYTHON APP + GIT
+================================================================================
+
+--- FILE 1: app.py ---
+
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return jsonify({"message": "Hello from CI/CD Pipeline!", "status": "running"})
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "healthy"}), 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
+
+--- FILE 2: requirements.txt ---
+
+flask==3.0.0
+pytest==7.4.3
+
+
+--- FILE 3: test_app.py ---
+
+import pytest
+from app import app
+
+@pytest.fixture
+def client():
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        yield client
+
+def test_home(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json["status"] == "running"
+
+def test_health(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json["status"] == "healthy"
+
+
+================================================================================
+                    STAGE 1: COMMANDS TO RUN
+================================================================================
+
+1. Create folder and files:
+   - Create folder: flask-cicd-app
+   - Create the 3 files above inside it
+
+2. Install dependencies & test locally:
+   cd flask-cicd-app
+   pip install -r requirements.txt
+   python app.py
+   # Visit http://localhost:5000        → should show {"message": "Hello from CI/CD Pipeline!", "status": "running"}
+   # Visit http://localhost:5000/health  → should show {"status": "healthy"}
+   # Stop server with Ctrl+C
+
+3. Run unit tests:
+   pytest test_app.py -v
+   # Should show 2 passed
+
+4. Initialize Git and push to GitHub:
+   git init
+   git add .
+   git commit -m "Stage 1: Initial Flask app with unit tests"
+   git remote add origin https://github.com/YOUR_USERNAME/flask-cicd-app.git
+   git branch -M main
+   git push -u origin main
+
+================================================================================
+                    INTERVIEW TOPICS COVERED
+================================================================================
+
+Git:
+  - Branching, merge, pull requests
+  - "What is branching strategy?" → main + feature branches
+
+Docker:
+  - Dockerfile, build, run, push
+  - CMD vs ENTRYPOINT
+  - Multi-stage builds / slim base images
+
+Jenkins:
+  - Declarative vs Scripted pipeline
+  - Jenkinsfile stages: Build → Test → Docker Build → Push → Deploy
+  - "How does Jenkins know when to trigger?" → Webhooks
+
+Kubernetes:
+  - Pods, Deployments, Services
+  - ClusterIP vs NodePort
+  - Rolling updates
+
+THE MOST ASKED QUESTION - "Explain your CI/CD pipeline end to end":
+  "Developer pushes code to GitHub → Webhook triggers Jenkins → Jenkins
+   pulls code, runs tests, builds Docker image, pushes to Docker Hub →
+   Jenkins triggers Kubernetes deployment → App is live on Minikube
+   cluster with zero downtime using rolling updates."
+
+Bonus Topics (awareness level):
+  - SonarQube     → Code quality scanning in pipeline
+  - Helm          → Kubernetes package manager
+  - ArgoCD        → GitOps-based continuous delivery
+  - Terraform     → Infrastructure as Code
+  - Ansible       → Configuration management
+  - Prometheus    → Monitoring & alerting
+  - Grafana       → Visualization dashboards
+
+================================================================================
+                    RESUME LINE
+================================================================================
+
+"Built end-to-end CI/CD pipeline using Git, Jenkins, Docker, and
+ Kubernetes (Minikube) for a Python Flask microservice with automated
+ testing, containerization, and deployment."
+
+================================================================================
