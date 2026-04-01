@@ -27,7 +27,7 @@ pipeline {
             agent {
                 docker {
                     image 'python:3.12-slim'                // temp container with Python pre-installed
-                    args '-v pip-cache:/root/.cache/pip'     // VOLUME: persist pip cache between builds (faster installs)
+                    args '-v pip-cache:/root/.cache/pip --user root'  // run as root so pip can write site-packages and cache
                 }
             }
             steps {

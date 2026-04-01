@@ -240,7 +240,7 @@ Errors we hit and fixed:
      This spins up a temp Python container for that stage only
 
 VOLUME CONCEPT (used in Jenkinsfile):
-  args '-v pip-cache:/root/.cache/pip'
+  args '-v pip-cache:/root/.cache/pip --user root'
 
   What is a Docker volume?
     - A volume is persistent storage that survives container restarts/removal.
@@ -260,6 +260,17 @@ VOLUME CONCEPT (used in Jenkinsfile):
     "A volume is persistent storage managed by Docker that outlives containers.
      We use it to cache build dependencies between CI runs so pip/npm/maven
      don't re-download everything on each build."
+
+  Why '--user root' was added:
+    - Jenkins started Docker agent as non-root user (uid 1000).
+    - pip failed with permission denied while installing packages.
+    - '--user root' lets pip install to system site-packages and write cache.
+    - This is acceptable in CI for short-lived build containers.
+
+  Production note:
+    - Avoid root where possible.
+    - Better approach: build a custom CI agent image with dependencies pre-installed,
+      or use controlled writable paths for non-root users.
 
 Jenkins job configuration (for reference):
   - Job type: Pipeline
