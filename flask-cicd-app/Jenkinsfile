@@ -1,0 +1,44 @@
+pipeline {
+    agent any
+
+    environment {
+        IMAGE_NAME = 'flask-cicd-app'
+        IMAGE_TAG  = "build-${BUILD_NUMBER}"
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh 'pip install -r requirements.txt'
+            }
+        }
+
+        stage('Run Tests') {
+            steps {
+                sh 'pytest test_app.py -v'
+            }
+        }
+
+        stage('Docker Build') {
+            steps {
+                sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                sh "docker build -t ${IMAGE_NAME}:latest ."
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Pipeline succeeded! Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+        failure {
+            echo 'Pipeline failed. Check test or build logs.'
+        }
+    }
+}
