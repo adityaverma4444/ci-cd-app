@@ -49,6 +49,24 @@ pipeline {
                 }
             }
         }
+        //stage 4 deploy to kubernetes
+        //used bitnami/kubectl image which has kubectl pre installed
+        stage('Deploy to K8s') {
+            agent {
+                docker {
+                    image 'bitnami/kubectl:latest'
+                    args '--user root --entrypoint=""'
+                    args '--user root --entrypoint="" -v /path/to/.kube/config:/root/.kube/config:ro'
+                }
+            }
+            steps {
+                dir('flask-cicd-app') {
+                    sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh 'kubectl rollout status deployment/flask-cicd-app --timeout=60s'
+                }
+            }
+        }        
+
     }
 
     // Post block: runs AFTER all stages finish (pass or fail)
