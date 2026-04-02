@@ -1,81 +1,66 @@
-// Declarative Pipeline — structured format that Jenkins reads top to bottom
+// Full CI/CD Pipeline: Checkout → Test → Build → Deploy
 pipeline {
 
-    // agent none = don't assign a global agent; each stage picks its own
     agent none
 
-    // Environment variables available to ALL stages
     environment {
         IMAGE_NAME = 'flask-cicd-app'
-        IMAGE_TAG  = "build-${BUILD_NUMBER}"   // BUILD_NUMBER is auto-set by Jenkins (1, 2, 3...)
+        IMAGE_TAG  = "build-${BUILD_NUMBER}"
     }
 
     stages {
 
-        // Stage 1: Pull latest code from GitHub
         stage('Checkout') {
-            agent any   // runs on Jenkins master
+            agent any
             steps {
-                checkout scm   // scm = Source Code Management (GitHub repo configured in Jenkins job)
+                checkout scm
             }
         }
 
-        // Stage 2: Install Python deps + run tests inside a Python Docker container
-        // Why Docker agent? Jenkins doesn't have Python installed.
-        // The python:3.12-slim image is pulled once and cached for future builds.
         stage('Install & Test') {
             agent {
                 docker {
-                    image 'python:3.12-slim'                // temp container with Python pre-installed
-                    args '-v pip-cache:/root/.cache/pip --user root'  // run as root so pip can write site-packages and cache
+                    image 'python:3.12-slim'
+                    args '-v pip-cache:/root/.cache/pip --user root'
                 }
             }
             steps {
-                dir('flask-cicd-app') {   // cd into project subfolder (repo root is P1/, not flask-cicd-app/)
+                dir('flask-cicd-app') {
                     sh 'pip install -r requirements.txt'
                     sh 'pytest test_app.py -v'
                 }
             }
         }
 
-        // Stage 3: Build Docker image using the project Dockerfile
-        // Needs Docker CLI, so runs on Jenkins master (agent any) not inside a container
         stage('Docker Build') {
             agent any
             steps {
                 dir('flask-cicd-app') {
-                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."     // tagged with build number
-                    sh "docker build -t ${IMAGE_NAME}:latest ."           // also tag as latest
+                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
+                    sh "docker build -t ${IMAGE_NAME}:latest ."
                 }
             }
         }
-        //stage 4 deploy to kubernetes
-        //used bitnami/kubectl image which has kubectl pre installed
+
+        // Deploy runs on Jenkins master where kubectl + kubeconfig are installed
         stage('Deploy to K8s') {
-            agent {
-                docker {
-                    image 'bitnami/kubectl:latest'
-                    args '--user root --entrypoint=""'
-                    args '--user root --entrypoint="" -v /path/to/.kube/config:/root/.kube/config:ro'
-                }
-            }
+            agent any
             steps {
                 dir('flask-cicd-app') {
                     sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG}"
                     sh 'kubectl rollout status deployment/flask-cicd-app --timeout=60s'
+                    sh 'kubectl get pods -l app=flask-cicd'
                 }
             }
-        }        
-
+        }
     }
 
-    // Post block: runs AFTER all stages finish (pass or fail)
     post {
         success {
-            echo "Pipeline succeeded! Image: ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "CI/CD Pipeline succeeded! Deployed: ${IMAGE_NAME}:${IMAGE_TAG}"
         }
         failure {
-            echo 'Pipeline failed. Check test or build logs.'
+            echo 'Pipeline failed. Check test, build, or deploy logs.'
         }
     }
 }
