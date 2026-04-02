@@ -569,10 +569,323 @@ Stage 5 final status: COMPLETED
 Goal:
   Add production-readiness features to K8s and automate CD from Jenkins.
 
-Topics to cover:
-  - PersistentVolume (PV) + PersistentVolumeClaim (PVC)
-  - Liveness/Readiness probes
-  - Taints and tolerations
-  - Horizontal Pod Autoscaler (HPA) / manual scaling
-  - Resource requests and limits
-  - Automate deployment from Jenkins (full CI/CD)
+================================================================================
+              STAGE 6 PART A: K8S OPS (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Added liveness and readiness probes to deployment
+  - Added resource requests and limits
+  - Created PV + PVC for persistent storage
+  - Added volume mount in deployment
+  - Added tolerations for taint-based scheduling
+  - Tested manual scaling and HPA
+
+Execution output:
+  kubectl get pods (after applying Stage 6A changes):
+    flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running  (old replica)
+    flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running  (old replica)
+    flask-cicd-app-7df54c8955-hm6qg   0/1  Running  (new pod, readiness probe not passed yet)
+
+  Note: 3rd pod shows 0/1 READY because readiness probe hasn't passed yet
+  (initialDelaySeconds: 5, then checks every 10s). Once /health responds
+  200 OK, it becomes 1/1. Old pods stay until new ones are ready = rolling update.
+
+--------------------------------------------------------------------------------
+YAML STRUCTURE GUIDE (interview must-know)
+--------------------------------------------------------------------------------
+
+  Deployment YAML structure (indentation matters):
+
+    apiVersion / kind / metadata     ← top-level resource info
+    spec:                            ← Deployment spec
+      replicas                       ← how many pods
+      selector                       ← how Deployment finds its Pods
+      template:                      ← Pod blueprint
+        metadata:
+          labels                     ← Pod labels (must match selector)
+        spec:                        ← Pod spec level
+          containers:                ← list of containers
+            - name / image / ports   ← container basics
+              livenessProbe          ← inside container (per-container)
+              readinessProbe         ← inside container (per-container)
+              resources              ← inside container (per-container)
+              volumeMounts           ← inside container (WHERE to mount)
+          volumes:                   ← pod level (WHAT to mount, shared)
+          tolerations:               ← pod level (scheduling rules)
+
+  Rule of thumb:
+    - Things specific to ONE container → inside containers list
+    - Things shared across pod / scheduling → same level as containers
+
+--------------------------------------------------------------------------------
+1. LIVENESS & READINESS PROBES
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml inside container spec:
+
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 10
+      periodSeconds: 15
+
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+
+  Liveness probe:
+    - "Is this container alive?"
+    - If fails → K8s RESTARTS the container
+    - Catches: app hung, deadlocked, zombie process
+
+  Readiness probe:
+    - "Is this container ready to serve traffic?"
+    - If fails → K8s REMOVES pod from Service (no traffic sent)
+    - Does NOT restart. Just waits.
+    - Catches: app still starting, warming cache, loading config
+
+  Why both?
+    - Liveness handles crashes/hangs (restart)
+    - Readiness handles slow starts (hold traffic)
+    - Together = zero-downtime deployments
+
+  Probe types (interview):
+    httpGet   → HTTP request to endpoint (we used this)
+    tcpSocket → TCP connection check
+    exec      → Run a command inside container
+
+  Interview Q: "Liveness vs Readiness probe?"
+    "Liveness restarts unhealthy containers. Readiness stops traffic to
+     pods not yet ready. Both are needed: liveness for self-healing,
+     readiness for zero-downtime deployments."
+
+--------------------------------------------------------------------------------
+2. RESOURCE REQUESTS & LIMITS
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml inside container spec:
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "250m"
+        memory: "256Mi"
+
+  Requests:
+    - Minimum guaranteed resources
+    - K8s scheduler uses this to decide which node to place pod on
+    - 100m = 0.1 CPU core (10% of one core)
+    - 128Mi = 128 megabytes
+
+  Limits:
+    - Maximum allowed resources
+    - CPU exceeded → throttled (slowed down)
+    - Memory exceeded → OOMKilled (pod killed and restarted)
+    - 250m = 0.25 CPU core
+    - 256Mi = 256 megabytes
+
+  Why set both?
+    - Without requests: scheduler can't plan, pods may land on overloaded nodes
+    - Without limits: one pod can eat all node resources, starving others
+
+  Interview Q: "What happens if a pod exceeds its memory limit?"
+    "It gets OOMKilled — Kubernetes kills it and restarts based on
+     restartPolicy. This prevents one pod from consuming all node memory."
+
+--------------------------------------------------------------------------------
+3. PERSISTENT VOLUME (PV) & PERSISTENT VOLUME CLAIM (PVC)
+--------------------------------------------------------------------------------
+
+  Created k8s/pv-pvc.yaml:
+
+    PV (PersistentVolume):
+      - Cluster-level storage resource (like a hard disk)
+      - Provisioned by admin or dynamically
+      - capacity: 100Mi, accessModes: ReadWriteOnce
+      - hostPath: /data/flask-app (local path on node, dev only)
+
+    PVC (PersistentVolumeClaim):
+      - Pod's request for storage
+      - Specifies how much and what access mode
+      - K8s binds PVC to a matching PV automatically
+
+  Mounted in deployment.yaml:
+    volumeMounts (inside container):
+      - name: app-data
+        mountPath: /app/data     ← path INSIDE container where data appears
+
+    volumes (pod spec level):
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: flask-pvc   ← links to PVC created in pv-pvc.yaml
+
+  Flow:
+    PV created → PVC created → K8s binds them → Pod mounts PVC → /app/data works
+
+  Access modes (interview):
+    ReadWriteOnce (RWO)  → One node reads/writes
+    ReadOnlyMany (ROX)   → Many nodes read only
+    ReadWriteMany (RWX)  → Many nodes read/write
+
+  hostPath vs cloud storage:
+    hostPath  → local node directory (dev/testing only, data lost if node dies)
+    EBS/EFS   → AWS persistent block/file storage
+    Azure Disk → Azure managed persistent disk
+    GCE PD    → Google persistent disk
+
+  Interview Q: "What is PV/PVC?"
+    "PV is cluster-level storage, PVC is a pod's request for that storage.
+     K8s binds them together. I used hostPath for local dev; in production
+     you'd use cloud-backed storage like EBS or managed disks."
+
+--------------------------------------------------------------------------------
+4. TAINTS & TOLERATIONS
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml at pod spec level:
+
+    tolerations:
+      - key: "env"
+        operator: "Equal"
+        value: "production"
+        effect: "NoSchedule"
+
+  Taint (on node):
+    - "No Entry" sign on a node
+    - Command: kubectl taint nodes minikube env=production:NoSchedule
+    - Blocks pods from scheduling on this node
+
+  Toleration (on pod):
+    - "Special pass" that lets pod bypass the taint
+    - Pod says "I can handle env=production"
+
+  Without toleration → pod blocked from tainted node
+  With toleration    → pod can schedule on tainted node
+
+  Taint effects (interview):
+    NoSchedule        → New pods blocked, existing pods stay
+    PreferNoSchedule  → K8s tries to avoid, not guaranteed
+    NoExecute         → New pods blocked AND existing pods evicted
+
+  Real-world use cases:
+    - GPU nodes: taint gpu=true → only ML pods with toleration go there
+    - Production nodes: taint env=prod → only prod apps
+    - Control-plane: already tainted so user pods don't run there
+
+  Commands:
+    kubectl taint nodes minikube env=production:NoSchedule      ← add taint
+    kubectl taint nodes minikube env=production:NoSchedule-     ← remove taint
+
+  Interview Q: "What are taints and tolerations?"
+    "Taints are on nodes to repel pods; tolerations are on pods to allow
+     scheduling on tainted nodes. We use them to dedicate nodes for specific
+     workloads like GPU or production environments."
+
+--------------------------------------------------------------------------------
+5. SCALING
+--------------------------------------------------------------------------------
+
+  Manual scaling:
+    kubectl scale deployment flask-cicd-app --replicas=4
+    kubectl get pods      ← shows 4 pods
+    kubectl scale deployment flask-cicd-app --replicas=2
+    kubectl get pods      ← back to 2 pods
+
+  HPA (Horizontal Pod Autoscaler):
+    Prerequisite: minikube addons enable metrics-server
+    kubectl autoscale deployment flask-cicd-app --cpu-percent=50 --min=2 --max=5
+    kubectl get hpa
+
+    How it works:
+      - Watches average CPU usage across all pods
+      - If CPU > 50% target → adds pods (up to max=5)
+      - If CPU drops → removes pods (down to min=2)
+      - Requires resource requests to be set (we did this)
+
+  Interview Q: "How does HPA work?"
+    "HPA monitors CPU/memory metrics via metrics-server. When average usage
+     exceeds the target threshold, it scales up replicas. When usage drops,
+     it scales down. It requires resource requests to calculate percentages."
+
+--------------------------------------------------------------------------------
+Stage 6A Interview 30-sec answer:
+  "I enhanced the deployment with liveness and readiness probes for self-healing
+   and zero-downtime updates, set resource requests/limits for fair scheduling,
+   added PV/PVC for persistent storage, configured tolerations for taint-based
+   scheduling, and tested both manual scaling and HPA for auto-scaling based
+   on CPU utilization."
+
+Git commands after Stage 6A:
+  git add flask-cicd-app/k8s/
+  git commit -m "Stage 6A: Add probes, resources, PV/PVC, tolerations to K8s manifests"
+  git push origin main
+
+--------------------------------------------------------------------------------
+6. ROLLING UPDATE (bonus — happened during Stage 6A apply)
+--------------------------------------------------------------------------------
+
+  What triggered it:
+    - We changed deployment.yaml (added probes, resources, volume, tolerations)
+    - kubectl apply detected pod template changed
+    - K8s started replacing old pods with new ones gradually
+
+  What we saw:
+    flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running   ← old pod
+    flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running   ← old pod
+    flask-cicd-app-7df54c8955-hm6qg   0/1  Running   ← new pod (readiness pending)
+
+  How rolling update works:
+    1) Create new pod with updated config
+    2) Wait for readiness probe to pass (0/1 → 1/1)
+    3) Route traffic to new pod
+    4) Kill one old pod
+    5) Repeat until all old pods replaced
+
+  Where is it defined?
+    - It is the DEFAULT strategy for Deployments (you don't need to write it)
+    - Explicit version:
+        spec:
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxSurge: 1           ← max 1 extra pod during update
+              maxUnavailable: 0     ← never fewer than desired count
+
+  Rolling Update vs Recreate:
+    RollingUpdate → gradual replacement, zero downtime (default)
+    Recreate      → kill all old pods first, then create new = DOWNTIME
+
+  When does rolling update trigger?
+    - Image changed          → yes
+    - Probes/resources added → yes
+    - Labels/env changed     → yes
+    - replicas changed       → NO (that's just scaling, existing pods stay)
+
+  Interview Q: "What is a rolling update?"
+    "Default deployment strategy in K8s. When pod template changes, K8s
+     gradually replaces old pods with new ones — creating first, waiting
+     for readiness, then terminating old. Ensures zero downtime."
+
+Stage 6A final status: COMPLETED
+
+
+================================================================================
+              STAGE 6 PART B: FULL CI/CD AUTOMATION (NEXT)
+================================================================================
+
+Goal:
+  Automate deployment from Jenkins to Kubernetes.
+  After this: git push → webhook → Jenkins test/build/deploy → app updated in K8s.
+
+Topics:
+  - Add Deploy stage to Jenkinsfile
+  - kubectl set image or kubectl apply from Jenkins
+  - Verify rollout status
+  - End-to-end test
