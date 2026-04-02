@@ -1,4 +1,4 @@
-// Full CI/CD Pipeline: Checkout → Test → Build → Deploy
+// Full CI/CD Pipeline: Checkout → Test → Build → Load Image → Deploy
 pipeline {
 
     agent none
@@ -42,13 +42,22 @@ pipeline {
             }
         }
 
-        // Deploy runs on Jenkins master where kubectl + kubeconfig are installed
+        // Transfer image from Jenkins' Docker (DinD) into Minikube's Docker
+        // then update the K8s deployment to use the new image
         stage('Deploy to K8s') {
             agent any
             steps {
                 dir('flask-cicd-app') {
+                    sh "docker save ${IMAGE_NAME}:${IMAGE_TAG} -o /tmp/flask-image.tar"
+                    sh 'kubectl delete pod image-loader --ignore-not-found'
+                    sh 'kubectl apply -f k8s/image-loader.yaml'
+                    sh 'kubectl wait --for=condition=Ready pod/image-loader --timeout=120s'
+                    sh 'kubectl cp /tmp/flask-image.tar image-loader:/tmp/flask-image.tar'
+                    sh 'kubectl exec image-loader -- docker load -i /tmp/flask-image.tar'
+                    sh 'kubectl delete pod image-loader --ignore-not-found'
+                    sh 'rm -f /tmp/flask-image.tar'
                     sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG}"
-                    sh 'kubectl rollout status deployment/flask-cicd-app --timeout=60s'
+                    sh 'kubectl rollout status deployment/flask-cicd-app --timeout=120s'
                     sh 'kubectl get pods -l app=flask-cicd'
                 }
             }
