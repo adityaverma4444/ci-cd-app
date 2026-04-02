@@ -374,7 +374,205 @@ Common webhook issues:
   - Secret mismatch:
       If using secret, configure same secret on both GitHub and Jenkins
 
+Stage 4 execution log:
+  - Used ngrok to expose Jenkins: https://discriminatingly-unequivalent-karma.ngrok-free.dev
+  - Added webhook in GitHub: Payload URL = <ngrok-url>/github-webhook/
+  - Enabled "GitHub hook trigger for GITScm polling" in Jenkins job config
+  - GitHub Recent Deliveries showed:
+      ping  → green checkmark (200) at setup time
+      push  → green checkmark (200) after git push
+  - Jenkins build #9 triggered automatically after push
+  - Build #9 shows "No Changes" because Jenkinsfile was already up to date on that push
+  - Build #8 was the last successful full pipeline run (all stages green)
+
+  "No Changes" explained:
+    - Webhook fired correctly (GitHub delivered push event, Jenkins received it).
+    - Jenkins compared latest commit with last built commit.
+    - If no NEW code changes since last build, stages still run but show "No Changes".
+    - Build #9 failed likely due to Docker Build stage (same as before), not webhook.
+    - Webhook itself worked perfectly.
+
+  Q: "If webhook has no changes, will it still run?"
+    - YES, webhook triggers the build regardless.
+    - Jenkins receives the push event and starts the pipeline.
+    - "No Changes" just means no new commits since last build.
+    - The pipeline still executes all stages.
+    - This is different from SCM Polling, which checks for changes first and
+      only triggers if there are new commits.
+
+  How to verify webhook worked:
+    1) GitHub → Webhooks → Recent Deliveries → green checkmark = GitHub sent it
+    2) Jenkins → Build History → new build appears = Jenkins received it
+    3) Console Output → first line says "Started by GitHub push by <username>"
+       (vs "Started by user unknown" for manual Build Now)
+
 Interview 30-sec answer for Stage 4:
-  "I configured a GitHub webhook to call Jenkins /github-webhook/ endpoint.
-   On every push to main, Jenkins auto-starts the CI pipeline. This removes
-   manual triggers and gives immediate feedback to developers."
+  "I configured a GitHub webhook to call Jenkins /github-webhook/ endpoint
+   via ngrok tunnel. On every push to main, GitHub sends a POST request,
+   Jenkins receives it and auto-starts the CI pipeline. This removes manual
+   triggers and gives developers immediate feedback on their commits."
+
+Git commands after Stage 4:
+  git add CICD_Stage1_Notes.txt
+  git commit -m "Stage 4: Document webhook setup and verification"
+  git push origin main
+
+Stage 4 final status: COMPLETED
+
+
+================================================================================
+                    STAGE 5: KUBERNETES + MINIKUBE (NEXT)
+================================================================================
+
+Goal:
+  Deploy the Flask Docker image to a local Kubernetes cluster using Minikube.
+
+Why this stage matters:
+  - Kubernetes is the #1 asked topic in DevOps interviews
+  - Shows you understand container orchestration, not just containers
+  - Covers: Pods, Deployments, Services, rollouts
+
+Pre-checks:
+  - Minikube installed and running
+  - kubectl installed
+  - Docker image exists (flask-cicd-app:latest from Jenkins build)
+
+Steps overview:
+  1) Start Minikube
+  2) Create k8s/deployment.yaml
+  3) Create k8s/service.yaml (NodePort for local access)
+  4) kubectl apply -f k8s/
+  5) Verify pods, service, and access the app via Minikube IP
+  6) Test rolling update
+
+Key K8s concepts (will cover in detail):
+  - Pod: smallest deployable unit, wraps one or more containers
+  - Deployment: manages pods, handles replicas and rolling updates
+  - Service: stable network endpoint to access pods (ClusterIP, NodePort, LoadBalancer)
+  - Namespace: logical isolation of resources
+  - Labels & Selectors: how Services find Pods
+
+Stage 5 execution log:
+  - Minikube started with Docker driver (v1.36.0, Kubernetes v1.33.1)
+  - Fixed driver issues: purged old profile, set driver=docker, fresh start
+  - Loaded image: docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+                   minikube image load flask-cicd-app:latest
+  - Applied manifests: kubectl apply -f flask-cicd-app/k8s/
+  - Pods running:
+      flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running
+      flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running
+  - Service exposed:
+      flask-cicd-service   NodePort   10.109.204.44   5000:30080/TCP
+  - App accessible at: http://127.0.0.1:1966 (via minikube service tunnel)
+  - Note: Docker driver on Windows requires terminal to stay open for tunnel
+
+Commands used in Stage 5:
+  1) minikube start --driver=docker
+     Why: Creates local K8s cluster inside Docker container
+
+  2) docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+     Why: Retag image to match deployment.yaml (which uses :latest)
+
+  3) minikube image load flask-cicd-app:latest
+     Why: Minikube has its own Docker daemon; image must be loaded into it
+
+  4) kubectl apply -f flask-cicd-app/k8s/
+     Why: Creates Deployment + Service from YAML manifests
+
+  5) kubectl get pods
+     Why: Verify pods are Running (not CrashLoopBackOff or ErrImagePull)
+
+  6) kubectl get svc
+     Why: Verify Service exists with correct NodePort mapping
+
+  7) minikube service flask-cicd-service --url
+     Why: Get accessible URL for NodePort service on Docker driver
+
+deployment.yaml explained:
+  apiVersion: apps/v1        → K8s API group for Deployments
+  kind: Deployment           → Resource type that manages pod lifecycle
+  replicas: 2                → Run 2 pod copies (high availability)
+  selector.matchLabels       → How Deployment finds its Pods (label matching)
+  template                   → Blueprint for each Pod
+  image: flask-cicd-app:latest → Which Docker image to run
+  imagePullPolicy: Never     → Use local image, don't pull from registry
+  containerPort: 5000        → Port app listens on inside container
+
+service.yaml explained:
+  kind: Service              → Stable network endpoint for Pods
+  type: NodePort             → Exposes on node IP + fixed port (30000-32767)
+  selector: app: flask-cicd  → Routes traffic to pods with this label
+  port: 5000                 → Service listens on this (cluster-internal)
+  targetPort: 5000           → Forwards to this port on Pod
+  nodePort: 30080            → External port on Minikube node
+
+  Traffic flow:
+    Browser → minikube-ip:30080 → Service:5000 → Pod:5000 → Flask app
+
+  Label matching chain (interview critical):
+    Deployment selector → finds Pods with label app=flask-cicd
+    Service selector    → finds Pods with label app=flask-cicd
+    Both point to same pods. This is how traffic routes correctly.
+
+Service types (interview must-know):
+  ClusterIP     → Internal only, no external access (default)
+  NodePort      → Exposes on static port on each node (we used this)
+  LoadBalancer  → Creates cloud LB on AWS/GCP/Azure (production)
+
+Errors we hit and fixed:
+  1) "DRV_UNSUPPORTED_OS" with Docker driver
+     Cause: Old minikube profile was corrupt after purge
+     Fix: minikube delete --purge, then fresh minikube start --driver=docker
+
+  2) "image not found" when loading
+     Cause: Image was tagged flask-cicd-app:stage2, not :latest
+     Fix: docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+
+  3) "imagePullPolicy" default tries Docker Hub
+     Fix: Set imagePullPolicy: Never in deployment.yaml for local images
+
+Interview answers from Stage 5:
+  Q: "What is a Pod?"
+    "Smallest deployable unit in K8s. Wraps one or more containers that
+     share network and storage."
+
+  Q: "What is a Deployment?"
+    "Manages Pods — ensures desired replicas are running, handles rolling
+     updates, auto-restarts failed pods."
+
+  Q: "What is a Service?"
+    "Stable network endpoint to access Pods. Pods have dynamic IPs but
+     Service IP stays fixed. Uses label selectors to route traffic."
+
+  Q: "ClusterIP vs NodePort vs LoadBalancer?"
+    "ClusterIP is internal-only. NodePort exposes on a static port on
+     each node. LoadBalancer creates a cloud LB in production."
+
+Interview 30-sec answer for Stage 5:
+  "I deployed the Flask app to Minikube using a Deployment with 2 replicas
+   for high availability and a NodePort Service for external access. I loaded
+   the Docker image locally using minikube image load and verified pods were
+   running and endpoints responsive via kubectl and minikube service tunnel."
+
+Git commands after Stage 5:
+  git add flask-cicd-app/k8s/
+  git commit -m "Stage 5: Add K8s deployment and service manifests for Minikube"
+  git push origin main
+
+Stage 5 final status: COMPLETED
+
+
+================================================================================
+                    STAGE 6: K8S OPS + FULL CI/CD AUTOMATION (NEXT)
+================================================================================
+
+Goal:
+  Add production-readiness features to K8s and automate CD from Jenkins.
+
+Topics to cover:
+  - PersistentVolume (PV) + PersistentVolumeClaim (PVC)
+  - Liveness/Readiness probes
+  - Taints and tolerations
+  - Horizontal Pod Autoscaler (HPA) / manual scaling
+  - Resource requests and limits
+  - Automate deployment from Jenkins (full CI/CD)
