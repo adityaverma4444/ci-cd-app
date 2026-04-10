@@ -1354,10 +1354,226 @@ Interview-safe line:
    transfer issue does not occur."
 
 ================================================================================
+STAGE 7 — HELM MIGRATION (Kubernetes Package Manager)
+================================================================================
+
+What is Helm?
+  - Helm is like apt/yum but for Kubernetes.
+  - Without Helm: you write multiple YAML files and apply them one by one.
+  - With Helm: you write templates with {{ placeholders }}, put all config in
+    one values.yaml, and deploy everything with a single command.
+  - Interview one-liner: "Helm is a Kubernetes package manager that packages
+    manifests into reusable charts with templated values."
+
+Key Helm Concepts:
+  - Chart     = a folder/package containing templates + config
+  - Templates = K8s YAML files with {{ .Values.xxx }} placeholders
+  - values.yaml = single file with all configurable parameters
+  - Release   = a running instance of a chart (has revision history)
+  - _helpers.tpl = reusable Go template functions for names and labels
+
+What we did:
+
+  Step 1: Created chart skeleton
+    Command: helm create flask-cicd-app
+    Generated folder: flask-cicd-app/helm/flask-cicd-app/
+    Structure:
+      Chart.yaml          -- metadata (chart name, version)
+      values.yaml         -- all configurable values
+      templates/
+        deployment.yaml   -- K8s Deployment with {{ placeholders }}
+        service.yaml      -- K8s Service with {{ placeholders }}
+        _helpers.tpl      -- reusable name/label generators
+        pvc.yaml          -- we added this ourselves for PersistentVolumeClaim
+        NOTES.txt         -- printed after helm install
+        tests/            -- helm test connection pod
+
+  Step 2: Configured values.yaml
+    This is where Helm's power lives. Instead of editing 3-4 YAML files,
+    you edit ONE file. We set:
+      replicaCount: 2
+      image.repository: flask-cicd-app
+      image.pullPolicy: Never
+      image.tag: latest
+      service.type: NodePort
+      service.port: 5000
+      resources (requests/limits for CPU and memory)
+      livenessProbe and readinessProbe (path: /health)
+      volumes (PVC: flask-pvc-helm2)
+      volumeMounts (mountPath: /app/data)
+      tolerations (key: env, value: production)
+
+  Step 3: How templates pull values (the core concept)
+    In templates/deployment.yaml:
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+    Helm replaces this with:
+      image: "flask-cicd-app:latest"
+    Same for replicas:
+      replicas: {{ .Values.replicaCount }}  -->  replicas: 2
+    The template is the skeleton, values.yaml is the brain.
+
+  Step 4: Created templates/pvc.yaml
+    Helm didn't generate this by default. We added it to create the
+    PersistentVolumeClaim via Helm. Named flask-pvc-helm2 to avoid
+    conflict with old manually-created flask-pvc.
+
+  Step 5: Set fullnameOverride and serviceAccount.create
+    fullnameOverride: flask-cicd-helm2
+      Controls the name prefix for all resources Helm creates.
+    serviceAccount.create: false
+      We had deleted the serviceaccount.yaml template earlier.
+      Helm's deployment template referenced a SA that didn't exist.
+      Setting create: false makes pods use the "default" SA.
+      This fixed: "serviceaccount flask-cicd-helm2-flask-cicd-app not found"
+
+  Step 6: Deployed to helm-lab namespace
+    kubectl create namespace helm-lab
+    Used separate namespace to keep Helm deployment isolated from
+    old kubectl-applied deployment in default namespace.
+
+Commands used and what each does:
+
+  1) helm template (dry run / preview)
+     helm template flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+       -f helm/flask-cicd-app/values.yaml
+     - Renders all templates locally, prints final YAML to terminal.
+     - Nothing is sent to Kubernetes. It's a preview.
+     - We used this to verify the YAML looks correct before deploying.
+
+  2) helm upgrade --install (deploy)
+     helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+       -f helm/flask-cicd-app/values.yaml
+     - If release does NOT exist -> install it (first time).
+     - If release already exists -> upgrade it (update values/templates).
+     - This single command replaces kubectl apply -f for all files.
+     - In CI/CD, always use upgrade --install for idempotency.
+
+  3) helm list -n helm-lab
+     - Shows all Helm releases in the namespace.
+     - Output: release name, namespace, revision, status, chart version.
+
+  4) helm uninstall flask-cicd-helm2 -n helm-lab
+     - Deletes ALL resources the chart created in one command.
+     - Replaces running kubectl delete for each resource separately.
+
+  5) helm rollback flask-cicd-helm2 <revision>
+     - Rolls back to a previous revision.
+     - Helm keeps history of all revisions.
+     - View history with: helm history flask-cicd-helm2
+
+Error we hit and fix:
+
+  Error: PersistentVolumeClaim "flask-pvc" exists and cannot be imported
+         invalid ownership metadata; missing key "app.kubernetes.io/managed-by"
+  Cause: In stages 5-6 we manually created flask-pvc via kubectl apply.
+         That PVC had no Helm labels. Helm refuses to adopt existing
+         resources it didn't create.
+  Fix:   Changed PVC name to flask-pvc-helm2 so Helm creates its own PVC.
+  Interview point: "Helm tracks ownership via labels
+    (app.kubernetes.io/managed-by: Helm) and annotations
+    (meta.helm.sh/release-name). Pre-existing resources without these
+    labels cause ownership conflicts."
+
+  Error: serviceaccount "flask-cicd-helm2-flask-cicd-app" not found
+  Cause: Deployment template referenced a ServiceAccount that didn't exist
+         because the SA template file was deleted, but values.yaml still
+         had serviceAccount.create: true (due to duplicate keys).
+  Fix:   Set serviceAccount.create: false so pods use default SA.
+
+Old Way vs Helm Way:
+
+  Deploy:
+    Old: kubectl apply -f deployment.yaml + service.yaml + pvc.yaml
+    Helm: helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app
+
+  Change replicas:
+    Old: edit deployment.yaml, then kubectl apply again
+    Helm: change replicaCount in values.yaml, then helm upgrade
+
+  Change image tag:
+    Old: edit deployment.yaml, then kubectl apply again
+    Helm: helm upgrade ... --set image.tag=build-20
+
+  Delete everything:
+    Old: kubectl delete deploy, svc, pvc separately
+    Helm: helm uninstall flask-cicd-helm2
+
+  Rollback:
+    Old: not easy, manual
+    Helm: helm rollback flask-cicd-helm2 1
+
+How next deployments look with Helm:
+
+  New image version:
+    helm upgrade flask-cicd-helm2 helm/flask-cicd-app --set image.tag=build-25
+
+  Scale up:
+    helm upgrade flask-cicd-helm2 helm/flask-cicd-app --set replicaCount=5
+
+  Different environments (dev vs prod):
+    helm upgrade ... -f values-dev.yaml    (dev settings)
+    helm upgrade ... -f values-prod.yaml   (prod settings)
+
+  In Jenkins pipeline (future):
+    sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
+        --set image.tag=build-${BUILD_NUMBER} -n helm-lab"
+    One line replaces entire image-loader + kubectl set image dance.
+
+_helpers.tpl explained:
+  - Defines reusable Go template functions.
+  - flask-cicd-app.fullname: generates resource names.
+    Since fullnameOverride=flask-cicd-helm2, all resources get that prefix.
+  - flask-cicd-app.labels: generates standard Helm labels
+    (chart version, app name, instance, managed-by).
+  - flask-cicd-app.serviceAccountName: returns SA name.
+    Since create=false, returns "default".
+
+Interview cheat sheet for Helm:
+
+  Q: What is Helm?
+  A: "Helm is a package manager for Kubernetes. It packages K8s manifests
+     into reusable charts with templated values."
+
+  Q: What is a Helm Chart?
+  A: "A chart is a collection of files: Chart.yaml (metadata),
+     values.yaml (config), and templates/ (K8s YAMLs with Go template
+     syntax). It's a blueprint for deploying an application."
+
+  Q: What is a Helm Release?
+  A: "A release is a running instance of a chart. Same chart can be
+     installed multiple times with different release names. Each release
+     tracks its own revision history."
+
+  Q: helm install vs helm upgrade vs helm upgrade --install?
+  A: "Install creates new release, upgrade updates existing one,
+     upgrade --install does both. In CI/CD we always use upgrade --install
+     for idempotency."
+
+  Q: How do you rollback?
+  A: "helm rollback <release> <revision>. Helm keeps revision history.
+     View with helm history <release>."
+
+  Q: What is values.yaml?
+  A: "Single source of truth for all configurable parameters. Templates
+     reference values using {{ .Values.xxx }}. Override at install time
+     with --set or -f flags."
+
+  Q: How does Helm track resource ownership?
+  A: "Helm adds labels (app.kubernetes.io/managed-by: Helm) and
+     annotations (meta.helm.sh/release-name) to every resource.
+     This is how it knows which resources belong to which release."
+
+Final state after Stage 7:
+  - Old deployment (kubectl apply) still running in default namespace.
+  - New Helm deployment running in helm-lab namespace.
+  - 2 running pods, NodePort service, Bound PVC in helm-lab.
+  - Same Flask app, same config, but now managed by Helm.
+
+================================================================================
 NEXT STEP PLAN (DO NOT EXECUTE UNTIL APPROVED)
 ================================================================================
 
-Planned order to simplify without breaking learning repo:
-  1) Push current known-good repo state first.
-  2) Then (only after explicit YES) set up local Jenkins service flow separately.
-  3) Keep this repo pipeline logic intact for interview explanation.
+Planned order:
+  Stage 8: MariaDB container addition via Helm (multi-service architecture).
+  Stage 9: Jenkins integration with Helm deployments.
+  Stage 10: Container registry (DockerHub/Harbor) integration.
