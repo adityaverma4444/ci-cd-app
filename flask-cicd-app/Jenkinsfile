@@ -1,4 +1,5 @@
 // Full CI/CD Pipeline: Checkout → Test → Build → Load Image → Deploy
+
 pipeline {
 
     agent none
@@ -42,9 +43,7 @@ pipeline {
             }
         }
 
-        // Transfer image from Jenkins' Docker (DinD) into Minikube's Docker
-        // then update the K8s deployment to use the new image
-        stage('Deploy to K8s') {
+        stage('Transfer Image to Minikube') {
             agent any
             steps {
                 dir('flask-cicd-app') {
@@ -56,9 +55,21 @@ pipeline {
                     sh 'kubectl exec image-loader -- docker load -i /tmp/flask-image.tar'
                     sh 'kubectl delete pod image-loader --ignore-not-found'
                     sh 'rm -f /tmp/flask-image.tar'
-                    sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG}"
-                    sh 'kubectl rollout status deployment/flask-cicd-app --timeout=120s'
-                    sh 'kubectl get pods -l app=flask-cicd'
+                }
+            }
+        }
+
+        stage('Deploy with Helm') {
+            agent any
+            steps {
+                dir('flask-cicd-app') {
+                    sh """
+                        helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
+                            -n helm-lab \
+                            --set image.tag=${IMAGE_TAG} \
+                            --wait --timeout 120s
+                    """
+                    sh 'kubectl get pods -n helm-lab'
                 }
             }
         }
@@ -66,7 +77,7 @@ pipeline {
 
     post {
         success {
-            echo "CI/CD Pipeline succeeded! Deployed: ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "CI/CD Pipeline succeeded! Deployed via Helm: ${IMAGE_NAME}:${IMAGE_TAG}"
         }
         failure {
             echo 'Pipeline failed. Check test, build, or deploy logs.'
