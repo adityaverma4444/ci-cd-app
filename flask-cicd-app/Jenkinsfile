@@ -1,16 +1,12 @@
-// Full CI/CD Pipeline: Checkout → Test → Build → Load Image → Deploy
-
 pipeline {
-
     agent none
 
     environment {
-        IMAGE_NAME = 'flask-cicd-app'
-        IMAGE_TAG  = "build-${BUILD_NUMBER}"
+        REGISTRY_REPO = 'adityaverma268/flask-cicd-app'
+        IMAGE_TAG     = "build-${BUILD_NUMBER}"
     }
 
     stages {
-
         stage('Checkout') {
             agent any
             steps {
@@ -37,24 +33,20 @@ pipeline {
             agent any
             steps {
                 dir('flask-cicd-app') {
-                    sh "docker build -t ${IMAGE_NAME}:${IMAGE_TAG} ."
-                    sh "docker build -t ${IMAGE_NAME}:latest ."
+                    sh "docker build -t ${REGISTRY_REPO}:${IMAGE_TAG} ."
+                    sh "docker build -t ${REGISTRY_REPO}:latest ."
                 }
             }
         }
 
-        stage('Transfer Image to Minikube') {
+        stage('Docker Push') {
             agent any
             steps {
-                dir('flask-cicd-app') {
-                    sh "docker save ${IMAGE_NAME}:${IMAGE_TAG} -o /tmp/flask-image.tar"
-                    sh 'kubectl delete pod image-loader --ignore-not-found'
-                    sh 'kubectl apply -f k8s/image-loader.yaml'
-                    sh 'kubectl wait --for=condition=Ready pod/image-loader --timeout=120s'
-                    sh 'kubectl cp /tmp/flask-image.tar image-loader:/tmp/flask-image.tar'
-                    sh 'kubectl exec image-loader -- docker load -i /tmp/flask-image.tar'
-                    sh 'kubectl delete pod image-loader --ignore-not-found'
-                    sh 'rm -f /tmp/flask-image.tar'
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
+                    sh "docker push ${REGISTRY_REPO}:${IMAGE_TAG}"
+                    sh "docker push ${REGISTRY_REPO}:latest"
+                    sh 'docker logout'
                 }
             }
         }
@@ -63,12 +55,7 @@ pipeline {
             agent any
             steps {
                 dir('flask-cicd-app') {
-                    sh """
-                        helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
-                            -n helm-lab \
-                            --set image.tag=${IMAGE_TAG} \
-                            --wait --timeout 120s
-                    """
+                    sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --wait --timeout 120s"
                     sh 'kubectl get pods -n helm-lab'
                 }
             }
@@ -77,10 +64,10 @@ pipeline {
 
     post {
         success {
-            echo "CI/CD Pipeline succeeded! Deployed via Helm: ${IMAGE_NAME}:${IMAGE_TAG}"
+            echo "Pipeline succeeded! Deployed ${REGISTRY_REPO}:${IMAGE_TAG}"
         }
         failure {
-            echo 'Pipeline failed. Check test, build, or deploy logs.'
+            echo "Pipeline failed. Check logs."
         }
     }
 }
