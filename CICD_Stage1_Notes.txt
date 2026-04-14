@@ -1577,3 +1577,380 @@ Planned order:
   Stage 8: MariaDB container addition via Helm (multi-service architecture).
   Stage 9: Jenkins integration with Helm deployments.
   Stage 10: Container registry (DockerHub/Harbor) integration.
+
+
+
+  ) Recreate namespace
+kubectl create namespace helm-lab
+Creates the namespace where we deployed the Helm release.
+
+2) Make sure app image is available in Minikube
+minikube image load flask-cicd-app:latest
+Loads your Flask image into the Minikube node.
+Important because your chart uses imagePullPolicy: Never.
+
+3) Preview rendered Helm YAML
+helm template flask-cicd-helm2 .\helm\flask-cicd-app -n helm-lab -f .\helm\flask-cicd-app\values.yaml
+Shows what Helm will create, without deploying.
+
+4) Install/restore the Helm release
+helm upgrade --install flask-cicd-helm2 .\helm\flask-cicd-app -n helm-lab -f .\helm\flask-cicd-app\values.yaml
+This is the main command.
+If release does not exist, it installs. If it exists, it upgrades.
+
+5) Verify resources
+kubectl get deploy,rs,pods,svc,pvc -n helm-lab
+helm list -n helm-lab
+Checks Deployment, Pods, Service, PVC, and Helm release status.
+
+6) Open app
+First get service name:
+
+kubectl get svc -n helm-lab
+Then open it:
+
+minikube service <service-name> -n helm-lab --url
+If you want, next I’ll give the MariaDB Helm commands in the sa
+
+================================================================================
+STAGE 8 - MARIADB CONNECTIVITY, DEBUGGING, AND MANUAL DB ACCESS
+================================================================================
+
+Stage 8 goal:
+  Connect the Flask app to a separate MariaDB workload running in Kubernetes,
+  verify that app-to-DB networking works, and understand both application-level
+  and manual DB access methods.
+
+Why we added MariaDB as a separate workload:
+  - Flask app is stateless and can scale horizontally.
+  - Database is stateful and needs persistent storage.
+  - In real projects, app and DB run as separate services/pods.
+  - Kubernetes service discovery lets Flask reach MariaDB by service name.
+
+High-level architecture after Stage 8:
+  Browser/local curl
+      ->
+  kubectl port-forward or Service
+      ->
+  Flask Service
+      ->
+  Flask Pod
+      ->
+  MariaDB Service (ClusterIP)
+      ->
+  MariaDB Pod (StatefulSet)
+      ->
+  PersistentVolumeClaim
+
+Important difference between health check and DB check:
+  /health
+    - Only proves the Flask app process is running and responding.
+    - Good for liveness/readiness probes.
+    - Does NOT prove DB connectivity.
+
+  /db-check
+    - Proves Flask can open a DB connection to MariaDB.
+    - Proves service name resolution works (DB_HOST=mariadb-lab).
+    - Proves DB credentials/env vars reached the container.
+    - Proves SQL query execution works.
+
+Meaning of successful verification:
+  If /health works:
+    Application is alive.
+
+  If /db-check works:
+    Application + database integration is working end to end.
+
+Application code added for DB connectivity:
+  app.py now:
+    - imports mysql.connector
+    - reads DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD from env vars
+    - exposes /db-check route
+    - runs SELECT 1 and returns JSON response
+
+Helm integration for DB connectivity:
+  values.yaml contains env vars:
+    DB_HOST=mariadb-lab
+    DB_PORT=3306
+    DB_NAME=appdb
+    DB_USER=appuser
+    DB_PASSWORD=app1234
+
+  deployment.yaml injects them into the container using:
+    {{- with .Values.env }}
+    env:
+      {{- toYaml . | nindent 12 }}
+    {{- end }}
+
+Why DB_HOST is mariadb-lab:
+  - mariadb-lab is the Kubernetes Service name.
+  - Inside the same namespace, pods can connect to service name directly.
+  - So Flask does not need hardcoded Pod IPs.
+  - This is the normal Kubernetes networking model.
+
+MariaDB service explanation:
+  mariadb-lab
+    - ClusterIP service
+    - Used by other pods inside the cluster to access MariaDB on port 3306
+
+  mariadb-lab-headless
+    - Headless service
+    - Used by StatefulSet for stable network identity
+    - More relevant when scaling stateful workloads or doing replication
+
+Commands used to verify Stage 8:
+  Check pods:
+    kubectl get pods -n helm-lab
+
+  Check services:
+    kubectl get svc -n helm-lab
+
+  Check PVCs:
+    kubectl get pvc -n helm-lab
+
+  Check Helm release:
+    helm list -n helm-lab
+
+  Check MariaDB pod details:
+    kubectl describe pod mariadb-lab-0 -n helm-lab
+
+Main issues faced during Stage 8:
+
+1) Docker Desktop engine was down
+  Symptom:
+    docker version failed with:
+      open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified
+
+  Meaning:
+    Docker client was installed, but Docker Desktop Linux engine/backend was not
+    actually up, so Minikube using Docker driver could not start.
+
+  Fix:
+    - Kill Docker Desktop processes
+    - Start Docker Desktop again
+    - Switch context back to desktop-linux
+    - Wait until docker version shows Server section
+
+2) Minikube could not connect to Docker
+  Symptom:
+    minikube start --driver=docker failed
+
+  Meaning:
+    Minikube with Docker driver depends on Docker engine being healthy.
+
+  Fix:
+    Start Docker Desktop first, then rerun:
+      minikube start --driver=docker
+
+3) kubectl could not reach the API server
+  Symptom:
+    kubectl get nodes -> connection refused on 127.0.0.1:<port>
+
+  Meaning:
+    Minikube profile existed, but cluster/API server was not fully up yet.
+
+  Fix:
+    Restart Minikube cleanly and wait until:
+      kubectl get nodes
+    shows minikube in Ready state.
+
+4) MariaDB restarts and probe tuning
+  Symptom:
+    MariaDB pod kept restarting because liveness/readiness exec probe timed out.
+
+  Root cause:
+    DB startup was slower than default probe timing in local/minikube setup.
+
+  Fix used:
+    Increase probe timings in Helm install/upgrade:
+      --set primary.livenessProbe.timeoutSeconds=5
+      --set primary.readinessProbe.timeoutSeconds=5
+      --set primary.livenessProbe.initialDelaySeconds=180
+      --set primary.readinessProbe.initialDelaySeconds=60
+
+  Learning:
+    Probes should match real startup behavior. Too aggressive probes can kill a
+    healthy but still-initializing database.
+
+5) /db-check returned 404
+  Symptom:
+    /health worked, but /db-check returned 404 Not Found
+
+  Meaning:
+    Running pods were still using old Flask image that did not contain the new
+    route yet.
+
+  Fix idea:
+    Rebuild image, make it available to Minikube, then restart deployment.
+
+6) Image loading/build confusion with imagePullPolicy: Never
+  Important concept:
+    imagePullPolicy: Never means Kubernetes will not pull from a registry.
+    It assumes the image already exists on the node.
+
+  Therefore:
+    If app code changes, it is NOT enough to edit source files locally.
+    You must rebuild the image and make that image available inside Minikube.
+
+  Valid approaches:
+    - minikube image load flask-cicd-app:latest
+    - minikube image build -t flask-cicd-app:latest .
+
+7) minikube image load failed with cache error
+  Symptom:
+    Failed to load image ... unexpected EOF
+
+  Meaning:
+    Minikube image cache was corrupted or inconsistent.
+
+  Better workaround:
+    Build directly inside Minikube:
+      minikube image build -t flask-cicd-app:latest .
+
+8) Flask pod crashed after restart
+  Symptom:
+    New Flask pod went into CrashLoopBackOff
+
+  Error found in pod logs:
+    ModuleNotFoundError: No module named 'mysql'
+
+  Root cause:
+    requirements.txt in actual build context did not contain
+    mysql-connector-python at that moment.
+
+  Fix:
+    Add to requirements.txt:
+      mysql-connector-python
+
+    Then rebuild image:
+      minikube image build -t flask-cicd-app:latest .
+
+    Then restart deployment:
+      kubectl rollout restart deployment/flask-cicd-helm2 -n helm-lab
+
+9) Final successful result
+  Flask deployment rolled out successfully.
+  MariaDB pod became Ready.
+  DB check succeeded.
+
+  Verified responses:
+    curl.exe http://127.0.0.1:5050/health
+      {"status":"healthy"}
+
+    curl.exe http://127.0.0.1:5050/db-check
+      {"database":"connected","result":1}
+
+Commands used in the final verification flow:
+  Start local access to Flask service:
+    kubectl port-forward -n helm-lab service/flask-cicd-helm2 5050:5000
+
+  Test health:
+    curl.exe http://127.0.0.1:5050/health
+
+  Test DB connectivity through Flask:
+    curl.exe http://127.0.0.1:5050/db-check
+
+Manual DB access vs app DB access:
+  App DB access:
+    Flask automatically connects using env vars.
+    This is application-level connectivity.
+
+  Manual DB access:
+    We log in ourselves using a DB client.
+    This is useful for troubleshooting, inspecting tables, and proving direct
+    access to the database.
+
+Three ways to access MariaDB manually:
+
+1) From inside the MariaDB pod
+  This is the most direct way.
+
+  Enter the pod:
+    kubectl exec -it -n helm-lab mariadb-lab-0 -- bash
+
+  Login as application user:
+    mariadb -u appuser -p appdb
+
+  Or login as root:
+    mariadb -u root -p
+
+  Then run:
+    SHOW DATABASES;
+    USE appdb;
+    SHOW TABLES;
+    SELECT 1;
+
+2) From local machine using port-forward
+  Expose DB locally:
+    kubectl port-forward -n helm-lab service/mariadb-lab 3307:3306
+
+  Connect from local client:
+    mariadb -h 127.0.0.1 -P 3307 -u appuser -p appdb
+
+  Good for:
+    - running SQL from host machine
+    - using DB GUI/client tools
+
+3) From inside the Flask pod
+  Important:
+    Our current Flask image contains Python connector library, but not the
+    mariadb/mysql CLI client binary.
+
+  So currently, from Flask pod we can prove DB access using Python:
+    kubectl exec -it -n helm-lab deploy/flask-cicd-helm2 -- sh
+
+    python -c "import mysql.connector; c=mysql.connector.connect(host='mariadb-lab',port=3306,database='appdb',user='appuser',password='app1234'); print('connected')"
+
+  This is actually closer to real application behavior.
+
+How to get mysql/mariadb CLI inside Flask pod (future improvement):
+  If we want interactive SQL from inside Flask pod, we must add a DB client to
+  the Flask image.
+
+  Since our image is based on python:3.12-slim, typical Dockerfile addition is:
+    RUN apt-get update && apt-get install -y default-mysql-client && rm -rf /var/lib/apt/lists/*
+
+  After rebuilding and redeploying, inside Flask pod we can run:
+    kubectl exec -it -n helm-lab deploy/flask-cicd-helm2 -- sh
+    mariadb -h mariadb-lab -P 3306 -u appuser -p appdb
+
+About ".mysql" or client config inside the pod:
+  In Linux, the usual file is ~/.my.cnf, not ".mysql".
+  It can store default client connection settings for convenience.
+
+  Example ~/.my.cnf:
+    [client]
+    host=mariadb-lab
+    port=3306
+    user=appuser
+    password=app1234
+    database=appdb
+
+  Then the CLI can be used without repeating all flags:
+    mariadb
+
+  Important interview note:
+    Storing plain password in ~/.my.cnf is convenient for lab/testing, but in
+    real projects we should prefer Kubernetes Secrets or mounted secret files.
+
+Best interview explanation for Stage 8:
+  "I separated the application and database into different Kubernetes workloads.
+   Flask used environment variables to connect to MariaDB through the ClusterIP
+   service name. I validated the application itself with /health and validated
+   real DB integration with /db-check. During troubleshooting I also used
+   kubectl exec, pod logs, describe, and port-forwarding to verify direct DB
+   access and isolate image, probe, and connectivity issues."
+
+Green flag to move to next stage:
+  - minikube node is Ready
+  - Flask pods are Running/Ready
+  - MariaDB pod is Running/Ready
+  - /health returns healthy
+  - /db-check returns connected
+  - We understand manual DB access separately from app-level access
+
+Recommended next stage after Stage 8:
+  Stage 9 - Jenkins + Helm integration
+    Goal:
+      Jenkins should build image and run helm upgrade --install so CD flow
+      becomes automated and repeatable.
