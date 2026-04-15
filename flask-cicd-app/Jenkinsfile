@@ -6,7 +6,6 @@ pipeline {
     environment {
         IMAGE_NAME = 'flask-cicd-app'
         IMAGE_TAG  = "build-${BUILD_NUMBER}"
-        K8S_NAMESPACE = 'dev-lab'
     }
 
     stages {
@@ -49,21 +48,21 @@ pipeline {
             agent any
             steps {
                 dir('flask-cicd-app') {
-                    sh 'kubectl create namespace ${K8S_NAMESPACE} --dry-run=client -o yaml | kubectl apply -f -'
-                    sh 'kubectl apply -f k8s/pv-pvc.yaml -n ${K8S_NAMESPACE}'
-                    sh 'kubectl apply -f k8s/deployment.yaml -n ${K8S_NAMESPACE}'
-                    sh 'kubectl apply -f k8s/service.yaml -n ${K8S_NAMESPACE}'
+                    // keep old style, but ensure deployment exists before set image
+                    sh 'kubectl apply -f k8s/pv-pvc.yaml'
+                    sh 'kubectl apply -f k8s/deployment.yaml'
+                    sh 'kubectl apply -f k8s/service.yaml'
                     sh "docker save ${IMAGE_NAME}:${IMAGE_TAG} -o /tmp/flask-image.tar"
-                    sh 'kubectl delete pod image-loader -n ${K8S_NAMESPACE} --ignore-not-found'
-                    sh 'kubectl apply -f k8s/image-loader.yaml -n ${K8S_NAMESPACE}'
-                    sh 'kubectl wait --for=condition=Ready pod/image-loader -n ${K8S_NAMESPACE} --timeout=120s'
-                    sh 'kubectl cp /tmp/flask-image.tar ${K8S_NAMESPACE}/image-loader:/tmp/flask-image.tar'
-                    sh 'kubectl exec -n ${K8S_NAMESPACE} image-loader -- docker load -i /tmp/flask-image.tar'
-                    sh 'kubectl delete pod image-loader -n ${K8S_NAMESPACE} --ignore-not-found'
+                    sh 'kubectl delete pod image-loader --ignore-not-found'
+                    sh 'kubectl apply -f k8s/image-loader.yaml'
+                    sh 'kubectl wait --for=condition=Ready pod/image-loader --timeout=120s'
+                    sh 'kubectl cp /tmp/flask-image.tar image-loader:/tmp/flask-image.tar'
+                    sh 'kubectl exec image-loader -- docker load -i /tmp/flask-image.tar'
+                    sh 'kubectl delete pod image-loader --ignore-not-found'
                     sh 'rm -f /tmp/flask-image.tar'
-                    sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG} -n ${K8S_NAMESPACE}"
-                    sh 'kubectl rollout status deployment/flask-cicd-app -n ${K8S_NAMESPACE} --timeout=120s'
-                    sh 'kubectl get pods -n ${K8S_NAMESPACE} -l app=flask-cicd'
+                    sh "kubectl set image deployment/flask-cicd-app flask-cicd=${IMAGE_NAME}:${IMAGE_TAG}"
+                    sh 'kubectl rollout status deployment/flask-cicd-app --timeout=120s'
+                    sh 'kubectl get pods -l app=flask-cicd'
                 }
             }
         }
