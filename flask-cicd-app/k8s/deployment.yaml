@@ -21,6 +21,21 @@ spec:
           ports:
             - containerPort: 5000
 
+          env:
+            - name: DB_HOST
+              value: mariadb-lab
+            - name: DB_PORT
+              value: "3306"
+            - name: DB_NAME
+              value: appdb
+            - name: DB_USER
+              value: appuser
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: db-secret-manual
+                  key: DB_PASSWORD
+
           livenessProbe:
             httpGet:
               path: /health
@@ -45,10 +60,16 @@ spec:
           volumeMounts:
             - name: app-data
               mountPath: /app/data
+            - name: db-secrets
+              mountPath: /etc/db-secrets
+              readOnly: true
       volumes:
         - name: app-data
           persistentVolumeClaim:
             claimName: flask-pvc
+        - name: db-secrets
+          secret:
+            secretName: db-secret-manual
       tolerations:
         - key: "env"
           operator: "Equal"
