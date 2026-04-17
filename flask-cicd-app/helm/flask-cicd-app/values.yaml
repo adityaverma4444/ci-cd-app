@@ -166,15 +166,21 @@ volumes:
   - name: app-data
     persistentVolumeClaim:
       claimName: flask-pvc-helm2
+  - name: db-secrets     # here you can see we had defined the secret first as env using the db-creds.txt file and now we are using the secret to mount the secret to the pod
+    secret:             
+      secretName: db-file-secret
   # - name: foo
   #   secret:
   #     secretName: mysecret
   #     optional: false
-
+                           
 # Additional volumeMounts on the output Deployment definition.
 volumeMounts:
   - name: app-data
     mountPath: /app/data
+  - name: db-secrets
+    mountPath: /etc/db-secrets
+    readOnly: true
   # - name: foo
   #   mountPath: "/etc/foo"
   #   readOnly: true
@@ -198,4 +204,15 @@ env:
   - name: DB_USER
     value: appuser
   - name: DB_PASSWORD
-    value: app1234
+    valueFrom:
+      secretKeyRef:
+        name: db-file-secret
+        key: DB_PASSWORD
+
+# AS A PART OF USING SECRETS AS HELM WE ARE DEFINING HERE ALSO DEFINED SECRETS IN THE TEMPLATE
+db:
+  host: mariadb-lab
+  port: "3306"
+  name: appdb
+  user: appuser
+  password: app1234

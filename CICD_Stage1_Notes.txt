@@ -1954,3 +1954,222 @@ Recommended next stage after Stage 8:
     Goal:
       Jenkins should build image and run helm upgrade --install so CD flow
       becomes automated and repeatable.
+
+================================================================================
+                    STAGE 9 - JENKINS + HELM INTEGRATION
+================================================================================
+
+Goal:
+  Replace the old kubectl-based deploy in Jenkins with Helm.
+  Jenkins pipeline builds the image, then runs helm upgrade --install
+  to deploy to Kubernetes using the Helm chart.
+
+What changed:
+  - Jenkinsfile (main branch):
+      The old "Deploy to K8s" stage (kubectl set image) was replaced with
+      a "Deploy with Helm" stage:
+        helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
+          -n helm-lab \
+          --set image.tag=build-${BUILD_NUMBER} \
+          --wait --timeout 120s
+      This tells Helm to install (or upgrade if exists) the release named
+      flask-cicd-helm2 using the chart at helm/flask-cicd-app, in the
+      helm-lab namespace.
+
+  - Multibranch Pipeline (dev branch):
+      The dev branch keeps the OLD kubectl-based deploy style for learning.
+      It uses kubectl apply for manifests, docker save/load for image transfer,
+      and kubectl set image for rolling updates. This demonstrates how teams
+      can have different deploy strategies per branch.
+
+  - Helm was manually installed inside the Jenkins container:
+      curl -kLO https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+      tar -zxvf helm-v3.14.4-linux-amd64.tar.gz
+      mv linux-amd64/helm /usr/local/bin/helm
+    Helm is NOT on the persistent volume, so if the Jenkins container is
+    recreated, Helm must be reinstalled.
+
+Key concepts:
+  helm upgrade --install:
+    - If the release doesn't exist → installs it (like helm install)
+    - If the release exists → upgrades it (like helm upgrade)
+    - This is idempotent — safe to run multiple times
+
+  --set flags:
+    Override values.yaml at deploy time without editing the file.
+    Example: --set image.tag=build-5 overrides image.tag in values.yaml
+
+  --wait:
+    Helm waits until all pods are Running/Ready before declaring success.
+    Without this, Helm would exit immediately even if pods are crashing.
+
+  --timeout 120s:
+    If pods aren't ready within 120 seconds, Helm rolls back and fails.
+
+Interview points:
+  Q: Why use Helm in a Jenkins pipeline instead of kubectl?
+  A: Helm manages releases as a unit — you can rollback, version, and template.
+     kubectl apply is imperative and doesn't track release history.
+
+  Q: What does helm upgrade --install do?
+  A: It's idempotent. Installs if new, upgrades if exists. Safe for CI/CD
+     because you don't need to check if the release exists first.
+
+Green flag for Stage 9:
+  - Jenkins pipeline runs helm upgrade --install successfully
+  - Pods come up healthy in helm-lab namespace
+  - dev branch still works with old kubectl apply style
+
+================================================================================
+                    STAGE 10 - DOCKER HUB REGISTRY FLOW
+================================================================================
+
+Goal:
+  Replace the local "minikube image load" approach with a real container
+  registry (Docker Hub). Jenkins pushes the image to Docker Hub, and
+  Kubernetes pulls it from Docker Hub during deployment.
+
+  Flow: Code Push → Jenkins Build → Docker Push to Hub → Helm Deploy → K8s Pulls from Hub
+
+Why this matters:
+  In real-world CI/CD, you never manually load images into the cluster.
+  Images are pushed to a registry (Docker Hub, ECR, GCR, ACR) and
+  Kubernetes pulls them. This is how every production pipeline works.
+
+What changed in Jenkinsfile (main branch):
+
+  1. New environment variable:
+       REGISTRY_REPO = 'adityaverma268/flask-cicd-app'
+     This is the Docker Hub repository path (username/repo-name).
+
+  2. Docker Build stage updated:
+       docker build -t adityaverma268/flask-cicd-app:build-${BUILD_NUMBER} .
+       docker build -t adityaverma268/flask-cicd-app:latest .
+     Images are now tagged with the full registry path so Docker knows
+     where to push them.
+
+  3. New "Docker Push" stage added:
+       withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', ...)]) {
+           sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
+           sh "docker push ${REGISTRY_REPO}:${IMAGE_TAG}"
+           sh "docker push ${REGISTRY_REPO}:latest"
+           sh 'docker logout'
+       }
+
+     Breakdown:
+       - withCredentials: Injects Jenkins-stored credentials as env vars
+         (DOCKER_USER and DOCKER_PASS). Never hardcode passwords in pipelines.
+       - docker login --password-stdin: Logs in securely (password via stdin,
+         not visible in process list or logs).
+       - docker push: Uploads the image to Docker Hub.
+       - docker logout: Cleans up auth token from the container.
+
+  4. Deploy with Helm stage updated:
+       --set image.repository=adityaverma268/flask-cicd-app
+       --set image.pullPolicy=Always
+       --set imagePullSecrets[0].name=dockerhub-pull
+
+     - image.repository: Now points to Docker Hub, not local.
+     - image.pullPolicy=Always: Forces Kubernetes to pull from registry
+       every time (instead of using cached local image).
+     - imagePullSecrets[0].name=dockerhub-pull: Tells the pod to use
+       a Kubernetes secret for Docker Hub authentication when pulling.
+
+  5. "Transfer Image to Minikube" stage REMOVED:
+     No more docker save/load/image-loader pod — images come from the registry.
+
+Jenkins Credentials Setup (dockerhub-creds):
+  1. Go to Jenkins → Manage Jenkins → Credentials → Global
+  2. Add Credentials → Kind: Username with password
+  3. ID: dockerhub-creds
+  4. Username: your Docker Hub username
+  5. Password: your Docker Hub Personal Access Token (PAT)
+     (NOT your Docker Hub login password — use a PAT with read/write scope)
+
+Docker Hub PAT (Personal Access Token):
+  - Created at: hub.docker.com → Account Settings → Security → Personal access tokens
+  - Scopes: repo:read,write (for push) or repo:read (for pull only)
+  - You CANNOT retrieve a PAT after creation — save it when generated
+  - If lost, create a new one and update Jenkins credentials
+
+Kubernetes imagePullSecrets — why needed:
+  Problem:
+    Jenkins (inside my-jenkins container) has Docker Hub credentials.
+    But Kubernetes (inside minikube) does NOT. They are separate systems.
+    When a pod tries to pull an image from Docker Hub, it pulls anonymously.
+    Docker Hub rate-limits anonymous pulls → "toomanyrequests" error.
+
+  Solution:
+    Create a Kubernetes secret that stores Docker Hub credentials:
+      kubectl create secret docker-registry dockerhub-pull \
+        -n helm-lab \
+        --docker-server=https://index.docker.io/v1/ \
+        --docker-username=adityaverma268 \
+        --docker-password=<YOUR_PAT>
+
+    Then tell the pod to use it via imagePullSecrets in the deployment spec.
+    We pass this through Helm: --set imagePullSecrets[0].name=dockerhub-pull
+
+  Important:
+    - This secret lives inside the Kubernetes cluster
+    - If minikube is DELETED and recreated, the secret is gone → recreate it
+    - If minikube is just RESTARTED, the secret survives
+
+Infrastructure recovery notes (for when things break):
+  Docker Desktop crashing during minikube start:
+    Fix: Use --base-image flag to skip the download that crashes Docker:
+      minikube start --driver=docker --base-image="gcr.io/k8s-minikube/kicbase:v0.0.47"
+
+  Jenkins container recreated (kubectl/helm missing):
+    kubectl and helm are installed in the container filesystem, NOT the
+    persistent volume. If the container is removed and recreated:
+      1. Reinstall kubectl:
+         docker exec --user root my-jenkins sh -c \
+           'curl -kLO "https://dl.k8s.io/release/v1.33.1/bin/linux/amd64/kubectl" && \
+            chmod +x kubectl && mv kubectl /usr/local/bin/ && \
+            ln -sf /usr/local/bin/kubectl /usr/bin/kubectl'
+      2. Reinstall helm:
+         docker exec --user root my-jenkins sh -c \
+           'curl -kLO https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz && \
+            tar -zxf helm-v3.14.4-linux-amd64.tar.gz && \
+            mv linux-amd64/helm /usr/local/bin/helm && \
+            ln -sf /usr/local/bin/helm /usr/bin/helm'
+      3. Copy fresh minikube certs:
+         docker cp ~/.minikube/ca.crt my-jenkins:/var/jenkins_home/.minikube/ca.crt
+         docker cp ~/.minikube/profiles/minikube/client.crt my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.crt
+         docker cp ~/.minikube/profiles/minikube/client.key my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.key
+
+  Symlink kubectl/helm to /usr/bin:
+    Jenkins' durable-task plugin sometimes uses a restricted PATH that
+    doesn't include /usr/local/bin. Symlinking ensures the binaries are
+    always found: ln -sf /usr/local/bin/kubectl /usr/bin/kubectl
+
+Interview points:
+  Q: How does your CI/CD pipeline push images to a registry?
+  A: Jenkins uses withCredentials to inject Docker Hub credentials securely,
+     logs in with docker login --password-stdin, pushes both a build-tagged
+     and latest-tagged image, then logs out. Credentials are stored in
+     Jenkins credential store, never in the Jenkinsfile.
+
+  Q: Why do you need imagePullSecrets in Kubernetes?
+  A: Kubernetes nodes don't have Docker Hub credentials. Without
+     imagePullSecrets, pulls are anonymous and hit rate limits.
+     The secret stores registry auth so pods can pull authenticated.
+
+  Q: What happens if you forget imagePullSecrets?
+  A: Pods will show ImagePullBackOff or ErrImagePull. The events will
+     show "toomanyrequests" or "unauthorized" depending on whether
+     the repo is public (rate-limited) or private (denied).
+
+  Q: Where should secrets like Docker Hub PATs be stored?
+  A: In a secrets manager — Jenkins credential store for CI, Kubernetes
+     Secrets for runtime. Never in code, Jenkinsfile, or values.yaml.
+     In production, teams use HashiCorp Vault or cloud-native solutions
+     (AWS Secrets Manager, Azure Key Vault).
+
+Green flag for Stage 10:
+  - Jenkins pushes image to Docker Hub (visible at hub.docker.com)
+  - Helm deploys with image.pullPolicy=Always
+  - Pods pull from Docker Hub using imagePullSecrets
+  - No more local image loading (docker save/load is gone from main)
+  - dev branch still uses old kubectl-based deploy style
