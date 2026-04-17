@@ -55,7 +55,7 @@ pipeline {
             agent any
             steps {
                 dir('flask-cicd-app') {
-                    sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --wait --timeout 120s"
+                    sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --set imagePullSecrets[0].name=dockerhub-pull --wait --timeout 120s"
                     sh 'kubectl get pods -n helm-lab'
                 }
             }
