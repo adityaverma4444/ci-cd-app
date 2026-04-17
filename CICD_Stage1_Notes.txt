@@ -2173,3 +2173,253 @@ Green flag for Stage 10:
   - Pods pull from Docker Hub using imagePullSecrets
   - No more local image loading (docker save/load is gone from main)
   - dev branch still uses old kubectl-based deploy style
+
+==========================================================================
+STAGE 11 — Kubernetes Secrets (Creation, Consumption, CI/CD Integration)
+==========================================================================
+
+What are Kubernetes Secrets?
+  - Kubernetes objects that store sensitive data (passwords, tokens, keys)
+  - Stored in etcd (the cluster's key-value store)
+  - Base64-encoded by default — NOT encrypted (base64 is encoding, not security)
+  - To encrypt at rest, enable EncryptionConfiguration on the API server
+  - Accessed by pods via env vars or volume mounts
+
+Secret types we used:
+  1. Opaque (generic) — for arbitrary key-value data (DB credentials)
+  2. kubernetes.io/dockerconfigjson — for container registry auth (imagePullSecrets from Stage 10)
+
+ConfigMap vs Secret (interview favourite):
+  ┌──────────────────┬──────────────────────┬──────────────────────┐
+  │                  │     ConfigMap        │     Secret           │
+  ├──────────────────┼──────────────────────┼──────────────────────┤
+  │ Purpose          │ Non-sensitive config  │ Sensitive data       │
+  │ Stored as        │ Plain text           │ Base64-encoded       │
+  │ Example          │ DB_HOST, DB_PORT     │ DB_PASSWORD, tokens  │
+  │ Mounted as       │ Env var or file      │ Env var or file      │
+  │ RBAC             │ Same                 │ Can be restricted    │
+  │ Encryption       │ No                   │ Optional at-rest     │
+  └──────────────────┴──────────────────────┴──────────────────────┘
+
+-----------------------------------------------
+THREE APPROACHES WE IMPLEMENTED
+-----------------------------------------------
+
+Approach 1 — Manual kubectl create (dev branch style):
+  Created secret from a file:
+    1. Created db-creds.txt with key=value pairs:
+       DB_HOST=mariadb-lab
+       DB_PORT=3306
+       DB_NAME=appdb
+       DB_USER=appuser
+       DB_PASSWORD=app1234
+
+    2. Command:
+       kubectl create secret generic db-file-secret -n helm-lab \
+         --from-env-file=flask-cicd-app/db-creds.txt
+
+    3. Verify:
+       kubectl get secret db-file-secret -n helm-lab -o yaml
+       → Shows base64-encoded values under "data:" field
+
+  On dev branch we also created a static k8s/db-secret.yaml manifest:
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: db-secret-manual
+    type: Opaque
+    stringData:        ← plain text, K8s auto-encodes to base64
+      DB_HOST: mariadb-lab
+      DB_PASSWORD: app1234
+      ...
+
+  Jenkinsfile (dev) applies it: kubectl apply -f k8s/db-secret.yaml
+
+Approach 2 — Helm-managed Secret (main branch):
+  Created templates/db-secret.yaml using Helm templating:
+    stringData:
+      DB_HOST: {{ .Values.db.host }}
+      DB_PASSWORD: {{ .Values.db.password }}
+
+  values.yaml has a "db:" section with defaults:
+    db:
+      host: mariadb-lab
+      password: app1234
+
+  Helm renders the template → creates the Secret in the cluster.
+  Advantage: Secret lifecycle tied to the Helm release (upgrade/rollback).
+
+Approach 3 — Jenkins injects credentials at deploy time (CI/CD integration):
+  Jenkinsfile (main) uses withCredentials:
+    withCredentials([usernamePassword(
+        credentialsId: 'db-creds',
+        usernameVariable: 'DB_USER',
+        passwordVariable: 'DB_PASS')]) {
+      sh "helm upgrade --install ... --set db.user=$DB_USER --set db.password=$DB_PASS ..."
+    }
+
+  Flow: Jenkins credential store → pipeline env vars → Helm --set → values override → Secret template
+  Result: Real credentials never stored in Git. Only dummy defaults in values.yaml.
+
+-----------------------------------------------
+TWO WAYS TO CONSUME SECRETS IN PODS
+-----------------------------------------------
+
+1. As Environment Variable (secretKeyRef):
+   In values.yaml:
+     env:
+       - name: DB_PASSWORD
+         valueFrom:
+           secretKeyRef:
+             name: db-file-secret
+             key: DB_PASSWORD
+
+   Verification:
+     kubectl exec <pod> -n helm-lab -- printenv DB_PASSWORD
+     → app1234
+
+   Use when: App reads config from env vars (12-factor app pattern, most common)
+
+2. As Volume Mount (projected as files):
+   In values.yaml:
+     volumes:
+       - name: db-secrets
+         secret:
+           secretName: db-file-secret
+     volumeMounts:
+       - name: db-secrets
+         mountPath: /etc/db-secrets
+         readOnly: true
+
+   Each key becomes a file: /etc/db-secrets/DB_PASSWORD contains "app1234"
+
+   Verification:
+     kubectl exec <pod> -n helm-lab -- ls /etc/db-secrets/
+     → DB_HOST  DB_NAME  DB_PASSWORD  DB_PORT  DB_USER
+     kubectl exec <pod> -n helm-lab -- cat /etc/db-secrets/DB_PASSWORD
+     → app1234
+
+   Use when:
+     - App expects config files (e.g. TLS certs, .my.cnf, SSH keys)
+     - You need auto-rotation (volume mounts update when secret changes, env vars don't)
+
+   Key difference: Volume-mounted secrets auto-update when the Secret object changes.
+   Env var secrets require a pod restart to pick up new values.
+
+-----------------------------------------------
+MAIN vs DEV BRANCH COMPARISON (Stage 11)
+-----------------------------------------------
+
+  main branch (Helm + Jenkins creds):
+    ┌─ Jenkinsfile ──────────────────────────────────────────────────┐
+    │ withCredentials(['db-creds']) {                                │
+    │   helm upgrade --set db.user=$DB_USER --set db.password=$DB_PASS │
+    │ }                                                              │
+    ├─ Helm templates/db-secret.yaml ────────────────────────────────┤
+    │ stringData:                                                    │
+    │   DB_PASSWORD: {{ .Values.db.password }}    ← from --set       │
+    ├─ values.yaml ──────────────────────────────────────────────────┤
+    │ env:                                                           │
+    │   DB_PASSWORD: secretKeyRef → db-file-secret                   │
+    │ volumeMounts: /etc/db-secrets (readOnly)                       │
+    └────────────────────────────────────────────────────────────────┘
+
+  dev branch (manual kubectl apply, no Jenkins creds):
+    ┌─ Jenkinsfile ──────────────────────────────────────────────────┐
+    │ kubectl apply -f k8s/db-secret.yaml                           │
+    │ kubectl apply -f k8s/deployment.yaml                          │
+    ├─ k8s/db-secret.yaml ──────────────────────────────────────────┤
+    │ stringData:                                                    │
+    │   DB_PASSWORD: app1234    ← hardcoded (not ideal for prod)     │
+    ├─ k8s/deployment.yaml ──────────────────────────────────────────┤
+    │ env:                                                           │
+    │   DB_PASSWORD: secretKeyRef → db-secret-manual                 │
+    │ volumeMounts: /etc/db-secrets (readOnly)                       │
+    └────────────────────────────────────────────────────────────────┘
+
+-----------------------------------------------
+WITHCREDENTIALS SYNTAX EXPLAINED
+-----------------------------------------------
+
+  withCredentials([usernamePassword(
+      credentialsId: 'db-creds',        ← ID from Jenkins > Manage Credentials
+      usernameVariable: 'DB_USER',      ← mapped to $DB_USER in shell
+      passwordVariable: 'DB_PASS')]) {  ← mapped to $DB_PASS, masked in logs
+    sh "helm upgrade ... --set db.user=$DB_USER --set db.password=$DB_PASS"
+  }
+
+  - credentialsId: Must match the ID you gave when adding credentials in Jenkins UI
+  - usernameVariable/passwordVariable: Temp env vars, only exist inside the {} block
+  - Jenkins auto-masks these values in console output (shows ****)
+  - Supports other types too: string(), file(), sshUserPrivateKey()
+
+-----------------------------------------------
+PRODUCTION BEST PRACTICES (interview gold)
+-----------------------------------------------
+
+  1. Never commit real secrets to Git — use dummy/default values in values.yaml
+  2. Jenkins credential store for CI-time secrets → passed via --set at deploy time
+  3. For production clusters, use external secrets managers:
+     - HashiCorp Vault + Vault Agent Injector
+     - Sealed Secrets (Bitnami) — encrypts secrets so they're safe in Git
+     - External Secrets Operator — syncs from AWS Secrets Manager / Azure Key Vault
+  4. Enable encryption at rest for etcd (EncryptionConfiguration)
+  5. Use RBAC to restrict who can read secrets:
+     kubectl create role secret-reader --verb=get --resource=secrets
+  6. Rotate secrets regularly — volume mounts auto-update, env vars need pod restart
+
+-----------------------------------------------
+INTERVIEW Q&A — STAGE 11
+-----------------------------------------------
+
+  Q: How do you manage secrets in Kubernetes?
+  A: We use Kubernetes Secrets with stringData for creation. Secrets are consumed
+     via secretKeyRef (env vars) or volume mounts (files). For CI/CD, Jenkins stores
+     credentials in its credential store, injects them via withCredentials, and passes
+     to Helm --set flags so real values never touch Git.
+
+  Q: What's the difference between secretKeyRef and volume mount for secrets?
+  A: secretKeyRef injects a single key as an env var — simple but requires pod
+     restart on secret change. Volume mount projects all keys as files under a
+     directory — supports auto-rotation and is better for certs/config files.
+
+  Q: stringData vs data in a Secret manifest?
+  A: stringData accepts plain text, Kubernetes auto-encodes to base64.
+     data requires you to pre-encode values. stringData is easier to write;
+     both produce the same Secret object.
+
+  Q: How do you handle secrets in CI/CD?
+  A: Jenkins stores credentials in its credential store, accessed via
+     withCredentials in the pipeline. At deploy time, credentials are passed
+     as Helm --set overrides, so the Secret template uses real values while
+     Git only has dummy defaults. Never commit secrets to Git.
+
+  Q: What if someone does kubectl get secret -o yaml?
+  A: They see base64-encoded values — which can be trivially decoded.
+     That's why RBAC matters: restrict secret read access. For true security,
+     enable etcd encryption at rest and use external secrets managers.
+
+  Q: How would you rotate a database password in production?
+  A: Update the Secret object (kubectl edit or through the secrets manager).
+     Volume-mounted secrets auto-update in ~1 minute. Env-var-based secrets
+     require a pod restart (kubectl rollout restart deployment/xxx).
+
+  Q: Why not just use ConfigMaps for everything?
+  A: ConfigMaps are plain text and visible to anyone with read access.
+     Secrets get base64 encoding, optional encryption at rest, and separate
+     RBAC controls. Use ConfigMaps for non-sensitive config (ports, hostnames)
+     and Secrets for passwords, tokens, and keys.
+
+  Q: What is Sealed Secrets?
+  A: A Bitnami project. You encrypt secrets locally with a public key
+     (kubeseal CLI) → produces a SealedSecret resource safe to commit to Git.
+     The controller in-cluster decrypts it using its private key and creates
+     a regular Kubernetes Secret. Solves the "secrets in Git" problem.
+
+Green flag for Stage 11:
+  - Secret created via Helm template on main, kubectl apply on dev
+  - DB_PASSWORD consumed via secretKeyRef (env var) ✓
+  - All secret keys projected as files at /etc/db-secrets/ (volume mount) ✓
+  - Jenkins withCredentials injects real DB creds at deploy time on main ✓
+  - dev branch uses static manifest (manual approach, no Jenkins creds) ✓
+  - Both consumption methods verified inside pods with kubectl exec
