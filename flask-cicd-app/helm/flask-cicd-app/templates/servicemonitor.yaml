@@ -3,7 +3,7 @@ kind: ServiceMonitor
 metadata:
   name: flask-app-monitor
   labels:
-    release: prometheus
+    release: prometheus   ##########
 spec:
   namespaceSelector:
     matchNames:

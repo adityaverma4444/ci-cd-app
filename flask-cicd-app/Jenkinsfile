@@ -56,7 +56,7 @@ pipeline {
             steps {
             dir('flask-cicd-app') {
                     withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
-                        sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --set imagePullSecrets[0].name=dockerhub-pull --set db.user=$DB_USER --set db.password=$DB_PASS --wait --timeout 120s"
+                        sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --set imagePullSecrets[0].name=dockerhub-pull --set db.user=$DB_USER --set db.password=$DB_PASS --wait --timeout 300s"
                     }
                     sh 'kubectl get pods -n helm-lab'
                 }
