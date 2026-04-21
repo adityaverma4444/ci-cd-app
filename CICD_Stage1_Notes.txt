@@ -2423,3 +2423,249 @@ Green flag for Stage 11:
   - Jenkins withCredentials injects real DB creds at deploy time on main ✓
   - dev branch uses static manifest (manual approach, no Jenkins creds) ✓
   - Both consumption methods verified inside pods with kubectl exec
+
+================================================================================
+STAGE 12: PROMETHEUS & GRAFANA MONITORING
+================================================================================
+
+WHAT THIS STAGE IS ABOUT (One Line):
+  We added code to our Flask app that counts every request, then installed
+  tools that collect those counts and draw graphs from them.
+
+--------------------------------------------------------------------------------
+1. WHY MONITORING?
+--------------------------------------------------------------------------------
+  - Without monitoring, debugging production issues is guesswork
+  - You can't SSH into every server to check logs manually at scale
+  - Monitoring gives real-time visibility: request rate, latency, error rates
+  - You open a dashboard and immediately see what's wrong and when it started
+
+  Interview: "Monitoring gives us visibility into application health and
+  performance in real-time. Without it, debugging production issues is guesswork."
+
+--------------------------------------------------------------------------------
+2. THE THREE PLAYERS (Restaurant Analogy)
+--------------------------------------------------------------------------------
+  Flask App (app.py)  = Kitchen that keeps a tally board of orders
+  Prometheus          = Manager who reads the tally board every 15 seconds
+  Grafana             = TV screen that shows pretty charts from the manager's notes
+
+  Flow: Flask counts requests → Prometheus collects every 15s → Grafana draws graphs
+
+  Key concept: Prometheus uses a PULL model. It visits your app's /metrics endpoint.
+  Your app does NOT push data to Prometheus. This is different from push-based
+  systems like Datadog agent.
+
+--------------------------------------------------------------------------------
+3. WHAT WE CHANGED IN CODE
+--------------------------------------------------------------------------------
+
+  FILE 1: app.py — Added 4 things:
+
+    a) Two metric objects (lines 9-18):
+       REQUEST_COUNT = Counter('flask_http_requests_total', ...)
+         → Counts total requests. Labels: method, endpoint, status
+         → Counter ONLY goes up (never decreases)
+       REQUEST_LATENCY = Histogram('flask_http_request_duration_seconds', ...)
+         → Records how long each request takes
+         → Histogram gives you percentiles (p50, p95, p99)
+
+    b) before_request hook (lines 21-23):
+       → Starts a stopwatch before every request
+
+    c) after_request hook (lines 26-39):
+       → Stops the stopwatch
+       → Adds +1 to REQUEST_COUNT for this method/endpoint/status
+       → Records the latency in REQUEST_LATENCY
+       → Skips recording for /metrics itself (avoids infinite loop)
+
+    d) /metrics endpoint (lines 76-78):
+       → Returns all metric data in Prometheus text format
+       → This is what Prometheus visits every 15 seconds
+       → Output looks like:
+         flask_http_requests_total{method="GET",endpoint="/",status="200"} 150
+         flask_http_request_duration_seconds_bucket{endpoint="/",le="0.005"} 148
+
+  FILE 2: requirements.txt — Added prometheus-client library
+
+  Counter vs Histogram:
+    Counter  = "How many?" (only goes up, e.g., total requests)
+    Histogram = "How long?" (distribution of values, gives percentiles)
+    You'd never use a Counter for latency because you need the range, not just total.
+
+--------------------------------------------------------------------------------
+4. SERVICEMONITOR — The Bridge Between App and Prometheus
+--------------------------------------------------------------------------------
+
+  File: helm/flask-cicd-app/templates/servicemonitor.yaml
+
+  In plain English: "Hey Prometheus, there's an app in helm-lab namespace
+  with label flask-cicd-app. Hit its /metrics every 15 seconds."
+
+  Key fields:
+    release: prometheus     → Permission tag. Prometheus only scrapes
+                              ServiceMonitors with this label.
+    namespaceSelector:
+      matchNames: [helm-lab] → Look in helm-lab namespace
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: flask-cicd-app → Find this Service
+    endpoints:
+      port: http, path: /metrics, interval: 15s → Scrape config
+
+  The chain:
+    ServiceMonitor → finds Service "flask-cicd-app" in helm-lab
+    → Service points to Flask pods → Prometheus scrapes /metrics every 15s
+
+  Why not edit Prometheus config directly?
+    ServiceMonitors are Kubernetes-native (declarative YAML, version-controlled,
+    deployed via Helm). Manual config editing doesn't scale and isn't GitOps-friendly.
+
+  What is a CRD (Custom Resource Definition)?
+    ServiceMonitor is NOT a built-in K8s resource. The Prometheus Operator
+    installs it as a CRD. It extends Kubernetes with new resource types.
+
+--------------------------------------------------------------------------------
+5. KUBE-PROMETHEUS-STACK — What Helm Installed
+--------------------------------------------------------------------------------
+
+  Command: helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
+
+  Component               | What it does                              | Essential?
+  ----------------------- | ----------------------------------------- | ----------
+  Prometheus Server       | Scrapes targets, stores time-series data  | YES
+  Grafana                 | Draws graphs, dashboards from Prometheus  | YES
+  Prometheus Operator     | Watches ServiceMonitors, auto-configures  | Nice to have
+  Alertmanager            | Routes alerts to Slack/email/PagerDuty    | Not for now
+  Node Exporter           | Reports CPU/memory/disk of the machine    | Not for now
+  Kube State Metrics      | Reports K8s object states (pods, deploys) | Not for now
+
+  We disabled Alertmanager, Node Exporter, and Kube State Metrics to save
+  Minikube resources. In production, all 6 would be running.
+
+--------------------------------------------------------------------------------
+6. THE FULL FLOW IN 6 STEPS
+--------------------------------------------------------------------------------
+
+  1. User hits GET /health
+  2. Flask app processes the request
+  3. before_request: starts stopwatch (time.time())
+  4. after_request: records count +1 and latency 0.002s
+  5. Every 15s, Prometheus visits GET /metrics and collects all counts
+  6. Grafana queries Prometheus → draws graph
+
+  Architecture:
+  ┌─────────────────── monitoring namespace ───────────────────┐
+  │  Prometheus Operator (watches ServiceMonitors)             │
+  │  Prometheus Server ──scrapes──→ Flask pods /metrics        │
+  │  Grafana ──queries──→ Prometheus (data source)             │
+  └────────────────────────────────────────────────────────────┘
+                    │ ServiceMonitor bridge
+  ┌─────────────────── helm-lab namespace ─────────────────────┐
+  │  flask-cicd-helm2 Service (port 5000)                      │
+  │    → Flask Pod 1 → GET /metrics → prometheus text format   │
+  │    → Flask Pod 2 → GET /metrics → prometheus text format   │
+  │  ServiceMonitor (release: prometheus)                      │
+  └────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+7. GRAFANA DASHBOARD — The 3 PromQL Queries
+--------------------------------------------------------------------------------
+
+  Panel 1: Request Rate
+    Query: rate(flask_http_requests_total[5m])
+    Meaning: "How many requests per second over last 5 minutes?"
+
+  Panel 2: Request Latency (p95)
+    Query: histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m]))
+    Meaning: "95% of requests completed within how many seconds?"
+
+  Panel 3: Total Requests by Endpoint
+    Query: sum by (endpoint, status) (flask_http_requests_total)
+    Meaning: "Total count of requests grouped by endpoint and status code"
+
+  What is PromQL?
+    Prometheus Query Language. How you ask questions about your metrics data.
+    rate()               → per-second rate over a time window
+    sum by (label)       → group and aggregate
+    histogram_quantile() → calculate percentiles from histogram data
+
+  Dashboard = the whole page. Panel = one graph/chart inside the dashboard.
+  We created 1 dashboard ("Flask App Monitoring") with 3 panels.
+
+--------------------------------------------------------------------------------
+8. JENKINSFILE CHANGE
+--------------------------------------------------------------------------------
+
+  Changed Helm deploy timeout from 120s to 300s:
+    --wait --timeout 300s
+
+  Why: Minikube under load (Prometheus stack running) needs more time to pull
+  images and start pods. 120s wasn't enough, causing "context deadline exceeded".
+
+--------------------------------------------------------------------------------
+9. FILES CHANGED IN THIS STAGE
+--------------------------------------------------------------------------------
+
+  app.py                  → Added Counter, Histogram, hooks, /metrics endpoint
+  requirements.txt        → Added prometheus-client
+  servicemonitor.yaml     → NEW: tells Prometheus to scrape Flask app
+  Jenkinsfile             → Changed timeout 120s → 300s
+
+--------------------------------------------------------------------------------
+10. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: How do you monitor your applications?
+  A: We use Prometheus and Grafana. The app exposes a /metrics endpoint using
+     the prometheus_client Python library. Prometheus scrapes it every 15 seconds
+     via a ServiceMonitor CRD. Grafana visualizes the data with dashboards
+     showing request rate, latency percentiles, and error rates.
+
+  Q: What metrics do you track?
+  A: Request count by method/endpoint/status (Counter), and request latency
+     (Histogram). Counter tells us throughput and error rates. Histogram gives
+     percentile latency like p95 and p99.
+
+  Q: What's the difference between Counter and Histogram?
+  A: Counter only goes up — it counts total events. Histogram records the
+     distribution of values (like latency) so you can calculate percentiles.
+
+  Q: What is a ServiceMonitor?
+  A: A Kubernetes CRD created by the Prometheus Operator. Instead of manually
+     editing Prometheus config to add scrape targets, you create a ServiceMonitor
+     YAML that says "scrape this service, on this port, at this path." The
+     Operator watches for these and auto-configures Prometheus.
+
+  Q: What's the difference between Prometheus and Grafana?
+  A: Prometheus collects and stores metrics (the database). Grafana is the
+     visualization layer that queries Prometheus and draws dashboards.
+
+  Q: How does Prometheus discover your app?
+  A: Pull-based model. Prometheus pulls data from /metrics. ServiceMonitor
+     tells it where to pull from. Different from push-based systems like
+     Datadog where the app sends data to the collector.
+
+  Q: What is PromQL?
+  A: Prometheus Query Language. Example: rate(flask_http_requests_total[5m])
+     means "per-second rate of requests over last 5 minutes." Supports
+     rate(), sum(), histogram_quantile() for aggregating time-series data.
+
+  Q: What are the three pillars of observability?
+  A: Metrics (Prometheus/Grafana), Logs (EFK stack/Loki), Tracing (Jaeger/
+     OpenTelemetry). We implemented metrics in this stage.
+
+  Q: What would you alert on?
+  A: Error rate > 5% (too many 500s), p95 latency > 2 seconds, pod restart
+     count increasing, and request rate dropping to zero (app might be down).
+
+--------------------------------------------------------------------------------
+11. STAGE 12 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - Flask app /metrics endpoint returns Prometheus text format ✓
+  - prometheus-client added to requirements.txt ✓
+  - ServiceMonitor deployed with release: prometheus label ✓
+  - Prometheus server scraping Flask pods every 15s ✓
+  - Grafana dashboard with 3 panels (rate, latency, total requests) ✓
+  - Traffic generated, graphs show spikes correctly ✓
+  - Jenkins pipeline passes with 300s timeout ✓
