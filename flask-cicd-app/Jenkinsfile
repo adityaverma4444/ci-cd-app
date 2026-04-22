@@ -15,25 +15,6 @@ pipeline {
             }
         }
 
-        stage('Create PVC') {
-            steps {
-                sh '''
-                    cat <<EOFPVC | kubectl apply -f -
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: flask-pvc-helm2
-  namespace: helm-lab
-spec:
-  accessModes: [ReadWriteOnce]
-  resources:
-    requests:
-      storage: 100Mi
-EOFPVC
-                '''
-            }
-        }
-
         stage('Deploy MariaDB') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
@@ -51,18 +32,6 @@ EOFPVC
                           --set primary.resources.limits.cpu=250m \
                           --set primary.resources.limits.memory=512Mi \
                           --wait --timeout 300s
-                    '''
-                }
-            }
-        }
-
-        stage('Create DB Secret for App') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
-                    sh '''
-                        kubectl create secret generic db-file-secret \
-                          --from-literal=DB_PASSWORD=$DB_PASS \
-                          -n helm-lab --dry-run=client -o yaml | kubectl apply -f -
                     '''
                 }
             }
