@@ -13,7 +13,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(flask_http_request_total[1m])",
+          "expr": "rate(flask_http_requests_total[1m])",
           "legendFormat": "{{method}} {{endpoint}} {{status}}",
           "refId": "A"
         }
@@ -49,30 +49,42 @@
     {
       "title": "Total Requests",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum(flask_http_request_total)",
+          "expr": "sum(flask_http_requests_total)",
           "refId": "A"
         }
       ],
-      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        },
+        "overrides": []
+      }
     },
     {
       "title": "Error Rate (5xx)",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "sum(rate(flask_http_request_total{status=~\"5..\"}[5m]))",
+          "expr": "sum(rate(flask_http_requests_total{status=~\"5..\"}[5m])) or vector(0)",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "reqps",
+          "color": { "mode": "thresholds" },
           "thresholds": {
             "steps": [
               { "color": "green", "value": null },
@@ -84,27 +96,28 @@
       }
     },
     {
-      "title": "Active Requests",
-      "type": "gauge",
-      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 8 },
+      "title": "Avg Request Duration",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "flask_http_request_inprogress",
+          "expr": "rate(flask_http_request_duration_seconds_sum[5m]) / rate(flask_http_request_duration_seconds_count[5m])",
+          "legendFormat": "{{endpoint}}",
           "refId": "A"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "short",
+          "unit": "s",
+          "color": { "mode": "thresholds" },
           "thresholds": {
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 5 },
-              { "color": "red", "value": 10 }
+              { "color": "yellow", "value": 0.5 },
+              { "color": "red", "value": 1 }
             ]
-          },
-          "max": 20
+          }
         },
         "overrides": []
       }
@@ -112,11 +125,11 @@
     {
       "title": "Pod CPU Usage",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container!=\"POD\", container!=\"\"}[5m])",
+          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container=\"flask-cicd-app\"}[5m])",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -132,11 +145,11 @@
     {
       "title": "Pod Memory Usage",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "container_memory_working_set_bytes{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container!=\"POD\", container!=\"\"}",
+          "expr": "container_memory_working_set_bytes{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container=\"flask-cicd-app\"}",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -158,5 +171,5 @@
   "timezone": "browser",
   "title": "Flask CI/CD App Monitoring",
   "uid": "flask-cicd-app",
-  "version": 1
+  "version": 2
 }
