@@ -1,0 +1,2671 @@
+================================================================================
+                    CI/CD PIPELINE PROJECT - COMPLETE ROADMAP
+================================================================================
+
+PROJECT: flask-cicd-app
+TECH STACK: Python Flask, Git, Docker, Jenkins, Webhook, Kubernetes (Minikube)
+
+================================================================================
+                         STAGE-BY-STAGE ROADMAP
+================================================================================
+
+Stage 1: Python App + Git          → Create Flask app, push to GitHub
+Stage 2: Dockerfile                → Containerize the app
+Stage 3: Jenkinsfile (CI Pipeline) → Build → Test → Docker Build → Push
+Stage 4: GitHub Webhook            → Auto-trigger Jenkins on git push
+Stage 5: Kubernetes + Minikube     → Deploy using deployment.yaml & service.yaml
+Stage 6: Full CI/CD Pipeline       → End-to-end: push code → app deployed
+
+================================================================================
+                    PROJECT STRUCTURE (Final)
+================================================================================
+
+flask-cicd-app/
+├── app.py                  # Flask REST API
+├── requirements.txt        # Python dependencies
+├── test_app.py             # Unit tests
+├── Dockerfile              # Stage 2
+├── Jenkinsfile             # Stage 3
+├── k8s/
+│   ├── deployment.yaml     # Stage 5
+│   └── service.yaml        # Stage 5
+└── README.md
+
+================================================================================
+                    STAGE 1: PYTHON APP + GIT
+================================================================================
+
+--- FILE 1: app.py ---
+
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return jsonify({"message": "Hello from CI/CD Pipeline!", "status": "running"})
+
+@app.route("/health")
+def health():
+    return jsonify({"status": "healthy"}), 200
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000)
+
+
+--- FILE 2: requirements.txt ---
+
+flask==3.0.0
+pytest==7.4.3
+
+
+--- FILE 3: test_app.py ---
+
+import pytest
+from app import app
+
+@pytest.fixture
+def client():
+    app.config["TESTING"] = True
+    with app.test_client() as client:
+        yield client
+
+def test_home(client):
+    response = client.get("/")
+    assert response.status_code == 200
+    assert response.json["status"] == "running"
+
+def test_health(client):
+    response = client.get("/health")
+    assert response.status_code == 200
+    assert response.json["status"] == "healthy"
+
+
+================================================================================
+                    STAGE 1: COMMANDS TO RUN
+================================================================================
+
+1. Create folder and files:
+   - Create folder: flask-cicd-app
+   - Create the 3 files above inside it
+
+2. Install dependencies & test locally:
+   cd flask-cicd-app
+   pip install -r requirements.txt
+   python app.py
+   # Visit http://localhost:5000        → should show {"message": "Hello from CI/CD Pipeline!", "status": "running"}
+   # Visit http://localhost:5000/health  → should show {"status": "healthy"}
+   # Stop server with Ctrl+C
+
+3. Run unit tests:
+   pytest test_app.py -v
+   # Should show 2 passed
+
+4. Initialize Git and push to GitHub:
+   git init
+   git add .
+   git commit -m "Stage 1: Initial Flask app with unit tests"
+   git remote add origin https://github.com/YOUR_USERNAME/flask-cicd-app.git
+   git branch -M main
+   git push -u origin main
+
+================================================================================
+                    INTERVIEW TOPICS COVERED
+================================================================================
+
+Git:
+  - Branching, merge, pull requests
+  - "What is branching strategy?" → main + feature branches
+
+Docker:
+  - Dockerfile, build, run, push
+  - CMD vs ENTRYPOINT
+  - Multi-stage builds / slim base images
+
+Jenkins:
+  - Declarative vs Scripted pipeline
+  - Jenkinsfile stages: Build → Test → Docker Build → Push → Deploy
+  - "How does Jenkins know when to trigger?" → Webhooks
+
+Kubernetes:
+  - Pods, Deployments, Services
+  - ClusterIP vs NodePort
+  - Rolling updates
+
+THE MOST ASKED QUESTION - "Explain your CI/CD pipeline end to end":
+  "Developer pushes code to GitHub → Webhook triggers Jenkins → Jenkins
+   pulls code, runs tests, builds Docker image, pushes to Docker Hub →
+   Jenkins triggers Kubernetes deployment → App is live on Minikube
+   cluster with zero downtime using rolling updates."
+
+Bonus Topics (awareness level):
+  - SonarQube     → Code quality scanning in pipeline
+  - Helm          → Kubernetes package manager
+  - ArgoCD        → GitOps-based continuous delivery
+  - Terraform     → Infrastructure as Code
+  - Ansible       → Configuration management
+  - Prometheus    → Monitoring & alerting
+  - Grafana       → Visualization dashboards
+
+================================================================================
+                    RESUME LINE
+================================================================================
+
+"Built end-to-end CI/CD pipeline using Git, Jenkins, Docker, and
+ Kubernetes (Minikube) for a Python Flask microservice with automated
+ testing, containerization, and deployment."
+
+================================================================================
+
+
+                    STAGE 2: DOCKER (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Created Dockerfile to containerize Flask app
+  - Built image: flask-cicd-app:stage2
+  - Ran container on host port 5000
+  - Verified app and health endpoints from container
+
+Commands used in Stage 2:
+  1) docker build -t flask-cicd-app:stage2 .
+     Why: Builds Docker image from Dockerfile and tags it as stage2.
+
+  2) docker run -d -p 5000:5000 --name flask-cicd-container flask-cicd-app:stage2
+     Why: Runs container in detached mode and maps host 5000 -> container 5000.
+
+  3) docker ps
+     Why: Confirms container is running and port mapping is correct.
+
+  4) curl -s http://localhost:5000/
+     Expected: {"message":"Hello from CI/CD Pipeline!","status":"running"}
+     Why: Validates application endpoint from inside Docker runtime.
+
+  5) curl -s http://localhost:5000/health
+     Expected: {"status":"healthy"}
+     Why: Validates health endpoint (important for probes/checks in K8s later).
+
+  6) docker images | findstr flask
+     Why: Confirms image exists locally with tag stage2.
+
+Interview talking points from Stage 2:
+  - Dockerfile layer caching: copy requirements.txt before source code.
+  - EXPOSE documents app port; actual host binding is done by -p.
+  - CMD starts app process in container.
+  - .dockerignore helps reduce context size and image bloat.
+
+Git commands after Stage 2 (Yes, commit now):
+  git status
+  git add Dockerfile .dockerignore
+  git commit -m "Stage 2: Add Dockerfile and container run validation"
+  git push origin main
+
+Note:
+  If you modified other files intentionally in Stage 2, include them in git add.
+  If .dockerignore is outside flask-cicd-app, move/copy it into flask-cicd-app first.
+
+
+================================================================================
+                    STAGE 3: JENKINS CI PIPELINE (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Created Jenkinsfile (declarative pipeline)
+  - Configured Jenkins job: "flask-cicd-pipeline" (Pipeline script from SCM)
+  - Connected to GitHub repo: https://github.com/adityaverma4444/ci-cd-app.git
+  - Script Path: flask-cicd-app/Jenkinsfile (because repo root is P1/, not flask-cicd-app/)
+  - Used Docker agent for Python stages (Jenkins doesn't have Python installed)
+  - Added pip-cache volume for faster builds
+
+Jenkinsfile stages explained:
+  1) Checkout        → Pulls code from GitHub (checkout scm)
+  2) Install & Test  → Runs inside python:3.12-slim Docker container
+                        pip install + pytest
+                        Uses dir('flask-cicd-app') because code is in subfolder
+  3) Docker Build    → Builds app image tagged with build number + latest
+  4) Post            → Prints success/failure message after all stages
+
+Errors we hit and fixed:
+  1) "Unable to find Jenkinsfile"
+     Cause: File was named "Jenkins" instead of "Jenkinsfile"
+     Fix: Renamed to exact "Jenkinsfile"
+
+  2) "Unable to find Jenkinsfile" (again)
+     Cause: Script Path in Jenkins was "Jenkinsfile" but file is at flask-cicd-app/Jenkinsfile
+     Fix: Changed Script Path to "flask-cicd-app/Jenkinsfile"
+
+  3) "pip: not found" (exit code 127)
+     Cause: Jenkins container doesn't have Python installed
+     Fix: Used Docker agent { docker { image 'python:3.12-slim' } }
+     This spins up a temp Python container for that stage only
+
+VOLUME CONCEPT (used in Jenkinsfile):
+  args '-v pip-cache:/root/.cache/pip --user root'
+
+  What is a Docker volume?
+    - A volume is persistent storage that survives container restarts/removal.
+    - Containers are ephemeral (temporary) — when removed, all data inside is lost.
+    - Volumes let you keep data between container runs.
+
+  Why use it here?
+    - Without volume: pip downloads Flask, pytest etc EVERY build (~10 sec each time).
+    - With volume: pip cache is saved. Next build reuses cached packages. Much faster.
+
+  Types of volumes (interview):
+    - Named volume:   docker run -v my-vol:/data         → Docker manages storage location
+    - Bind mount:     docker run -v /host/path:/data     → You control exact host path
+    - tmpfs mount:    docker run --tmpfs /data            → In-memory only, lost on stop
+
+  Interview Q: "What is a Docker volume?"
+    "A volume is persistent storage managed by Docker that outlives containers.
+     We use it to cache build dependencies between CI runs so pip/npm/maven
+     don't re-download everything on each build."
+
+  Why '--user root' was added:
+    - Jenkins started Docker agent as non-root user (uid 1000).
+    - pip failed with permission denied while installing packages.
+    - '--user root' lets pip install to system site-packages and write cache.
+    - This is acceptable in CI for short-lived build containers.
+
+  Production note:
+    - Avoid root where possible.
+    - Better approach: build a custom CI agent image with dependencies pre-installed,
+      or use controlled writable paths for non-root users.
+
+Jenkins job configuration (for reference):
+  - Job type: Pipeline
+  - Definition: Pipeline script from SCM
+  - SCM: Git
+  - Repository URL: https://github.com/adityaverma4444/ci-cd-app.git
+  - Branch: */main
+  - Script Path: flask-cicd-app/Jenkinsfile
+  - Credentials: none (public repo)
+
+Key Jenkins concepts (interview):
+  - Declarative vs Scripted pipeline:
+      Declarative = pipeline { } block, structured, easier to read (we use this)
+      Scripted = node { } block, full Groovy, more flexible but harder
+
+  - agent any vs agent none vs agent docker:
+      any    = run on Jenkins master or any connected node
+      none   = don't assign globally, each stage picks its own
+      docker = spin up a container from given image for that stage
+
+  - Fail-fast behavior:
+      If any stage fails, remaining stages are SKIPPED.
+      Post block still runs (for notifications/cleanup).
+      Exit code 127 = "command not found" in Linux.
+
+  - BUILD_NUMBER:
+      Auto-incremented by Jenkins (1, 2, 3...).
+      Used to tag Docker images for traceability.
+
+  - checkout scm:
+      Pulls code from the SCM (Git) configured in the Jenkins job.
+
+Interview 30-sec answer for Stage 3:
+  "I created a declarative Jenkinsfile with three stages: checkout, test, and
+   Docker build. Tests run inside a python:3.12-slim Docker agent so Jenkins
+   stays clean. I used a named volume for pip cache to speed up builds. If any
+   stage fails, Jenkins skips the rest and triggers the post-failure block."
+
+Git commands after Stage 3:
+  git add Jenkinsfile
+  git commit -m "Stage 3: Add Jenkinsfile with Docker agent and pip cache volume"
+  git push origin main
+
+Stage 3 final status:
+  - Pipeline executed successfully after fixes.
+  - Key learning: most CI failures are environment/path/permissions issues, not code logic.
+  - Final resolved chain:
+      Jenkinsfile not found -> fixed filename + Script Path
+      pip not found -> used Python Docker agent
+      pip permission denied -> added --user root for CI container
+
+
+================================================================================
+                    STAGE 4: GITHUB WEBHOOK (NEXT)
+================================================================================
+
+Goal:
+  Auto-trigger Jenkins build whenever code is pushed to GitHub.
+
+Why this stage matters:
+  - Removes manual "Build Now"
+  - Makes CI event-driven
+  - This is the real-world CI trigger pattern
+
+Pre-checks:
+  - Jenkins job already works with manual Build Now (done)
+  - GitHub repo is reachable from Jenkins (done)
+  - Jenkins has URL accessible from GitHub
+
+Webhook setup (GitHub):
+  1) Open repo -> Settings -> Webhooks -> Add webhook
+  2) Payload URL:
+       http://<your-jenkins-host>:8080/github-webhook/
+     For local machine testing, expose Jenkins with ngrok:
+       ngrok http 8080
+     Then use:
+       https://<ngrok-id>.ngrok-free.app/github-webhook/
+  3) Content type: application/json
+  4) Which events: Just the push event
+  5) Active: checked
+  6) Save webhook
+
+Jenkins job setup:
+  - Job -> Configure -> Build Triggers
+  - Enable: GitHub hook trigger for GITScm polling
+  - Save
+
+Validation test:
+  1) Make a small commit (e.g., comment in notes or README)
+  2) git push origin main
+  3) Check Jenkins build queue/history
+  4) Build should start automatically without clicking Build Now
+
+Common webhook issues:
+  - 404/timeout from GitHub:
+      Jenkins not publicly reachable (use ngrok/localtunnel)
+  - 403 No valid crumb:
+      Usually wrong endpoint path; must end with /github-webhook/
+  - No build trigger:
+      Build trigger checkbox not enabled in Jenkins job
+  - Secret mismatch:
+      If using secret, configure same secret on both GitHub and Jenkins
+
+Stage 4 execution log:
+  - Used ngrok to expose Jenkins: https://discriminatingly-unequivalent-karma.ngrok-free.dev
+  - Added webhook in GitHub: Payload URL = <ngrok-url>/github-webhook/
+  - Enabled "GitHub hook trigger for GITScm polling" in Jenkins job config
+  - GitHub Recent Deliveries showed:
+      ping  → green checkmark (200) at setup time
+      push  → green checkmark (200) after git push
+  - Jenkins build #9 triggered automatically after push
+  - Build #9 shows "No Changes" because Jenkinsfile was already up to date on that push
+  - Build #8 was the last successful full pipeline run (all stages green)
+
+  "No Changes" explained:
+    - Webhook fired correctly (GitHub delivered push event, Jenkins received it).
+    - Jenkins compared latest commit with last built commit.
+    - If no NEW code changes since last build, stages still run but show "No Changes".
+    - Build #9 failed likely due to Docker Build stage (same as before), not webhook.
+    - Webhook itself worked perfectly.
+
+  Q: "If webhook has no changes, will it still run?"
+    - YES, webhook triggers the build regardless.
+    - Jenkins receives the push event and starts the pipeline.
+    - "No Changes" just means no new commits since last build.
+    - The pipeline still executes all stages.
+    - This is different from SCM Polling, which checks for changes first and
+      only triggers if there are new commits.
+
+  How to verify webhook worked:
+    1) GitHub → Webhooks → Recent Deliveries → green checkmark = GitHub sent it
+    2) Jenkins → Build History → new build appears = Jenkins received it
+    3) Console Output → first line says "Started by GitHub push by <username>"
+       (vs "Started by user unknown" for manual Build Now)
+
+Interview 30-sec answer for Stage 4:
+  "I configured a GitHub webhook to call Jenkins /github-webhook/ endpoint
+   via ngrok tunnel. On every push to main, GitHub sends a POST request,
+   Jenkins receives it and auto-starts the CI pipeline. This removes manual
+   triggers and gives developers immediate feedback on their commits."
+
+Git commands after Stage 4:
+  git add CICD_Stage1_Notes.txt
+  git commit -m "Stage 4: Document webhook setup and verification"
+  git push origin main
+
+Stage 4 final status: COMPLETED
+
+
+================================================================================
+                    STAGE 5: KUBERNETES + MINIKUBE (NEXT)
+================================================================================
+
+Goal:
+  Deploy the Flask Docker image to a local Kubernetes cluster using Minikube.
+
+Why this stage matters:
+  - Kubernetes is the #1 asked topic in DevOps interviews
+  - Shows you understand container orchestration, not just containers
+  - Covers: Pods, Deployments, Services, rollouts
+
+Pre-checks:
+  - Minikube installed and running
+  - kubectl installed
+  - Docker image exists (flask-cicd-app:latest from Jenkins build)
+
+Steps overview:
+  1) Start Minikube
+  2) Create k8s/deployment.yaml
+  3) Create k8s/service.yaml (NodePort for local access)
+  4) kubectl apply -f k8s/
+  5) Verify pods, service, and access the app via Minikube IP
+  6) Test rolling update
+
+Key K8s concepts (will cover in detail):
+  - Pod: smallest deployable unit, wraps one or more containers
+  - Deployment: manages pods, handles replicas and rolling updates
+  - Service: stable network endpoint to access pods (ClusterIP, NodePort, LoadBalancer)
+  - Namespace: logical isolation of resources
+  - Labels & Selectors: how Services find Pods
+
+Stage 5 execution log:
+  - Minikube started with Docker driver (v1.36.0, Kubernetes v1.33.1)
+  - Fixed driver issues: purged old profile, set driver=docker, fresh start
+  - Loaded image: docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+                   minikube image load flask-cicd-app:latest
+  - Applied manifests: kubectl apply -f flask-cicd-app/k8s/
+  - Pods running:
+      flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running
+      flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running
+  - Service exposed:
+      flask-cicd-service   NodePort   10.109.204.44   5000:30080/TCP
+  - App accessible at: http://127.0.0.1:1966 (via minikube service tunnel)
+  - Note: Docker driver on Windows requires terminal to stay open for tunnel
+
+Commands used in Stage 5:
+  1) minikube start --driver=docker
+     Why: Creates local K8s cluster inside Docker container
+
+  2) docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+     Why: Retag image to match deployment.yaml (which uses :latest)
+
+  3) minikube image load flask-cicd-app:latest
+     Why: Minikube has its own Docker daemon; image must be loaded into it
+
+  4) kubectl apply -f flask-cicd-app/k8s/
+     Why: Creates Deployment + Service from YAML manifests
+
+  5) kubectl get pods
+     Why: Verify pods are Running (not CrashLoopBackOff or ErrImagePull)
+
+  6) kubectl get svc
+     Why: Verify Service exists with correct NodePort mapping
+
+  7) minikube service flask-cicd-service --url
+     Why: Get accessible URL for NodePort service on Docker driver
+
+deployment.yaml explained:
+  apiVersion: apps/v1        → K8s API group for Deployments
+  kind: Deployment           → Resource type that manages pod lifecycle
+  replicas: 2                → Run 2 pod copies (high availability)
+  selector.matchLabels       → How Deployment finds its Pods (label matching)
+  template                   → Blueprint for each Pod
+  image: flask-cicd-app:latest → Which Docker image to run
+  imagePullPolicy: Never     → Use local image, don't pull from registry
+  containerPort: 5000        → Port app listens on inside container
+
+service.yaml explained:
+  kind: Service              → Stable network endpoint for Pods
+  type: NodePort             → Exposes on node IP + fixed port (30000-32767)
+  selector: app: flask-cicd  → Routes traffic to pods with this label
+  port: 5000                 → Service listens on this (cluster-internal)
+  targetPort: 5000           → Forwards to this port on Pod
+  nodePort: 30080            → External port on Minikube node
+
+  Traffic flow:
+    Browser → minikube-ip:30080 → Service:5000 → Pod:5000 → Flask app
+
+  Label matching chain (interview critical):
+    Deployment selector → finds Pods with label app=flask-cicd
+    Service selector    → finds Pods with label app=flask-cicd
+    Both point to same pods. This is how traffic routes correctly.
+
+Service types (interview must-know):
+  ClusterIP     → Internal only, no external access (default)
+  NodePort      → Exposes on static port on each node (we used this)
+  LoadBalancer  → Creates cloud LB on AWS/GCP/Azure (production)
+
+Errors we hit and fixed:
+  1) "DRV_UNSUPPORTED_OS" with Docker driver
+     Cause: Old minikube profile was corrupt after purge
+     Fix: minikube delete --purge, then fresh minikube start --driver=docker
+
+  2) "image not found" when loading
+     Cause: Image was tagged flask-cicd-app:stage2, not :latest
+     Fix: docker tag flask-cicd-app:stage2 flask-cicd-app:latest
+
+  3) "imagePullPolicy" default tries Docker Hub
+     Fix: Set imagePullPolicy: Never in deployment.yaml for local images
+
+Interview answers from Stage 5:
+  Q: "What is a Pod?"
+    "Smallest deployable unit in K8s. Wraps one or more containers that
+     share network and storage."
+
+  Q: "What is a Deployment?"
+    "Manages Pods — ensures desired replicas are running, handles rolling
+     updates, auto-restarts failed pods."
+
+  Q: "What is a Service?"
+    "Stable network endpoint to access Pods. Pods have dynamic IPs but
+     Service IP stays fixed. Uses label selectors to route traffic."
+
+  Q: "ClusterIP vs NodePort vs LoadBalancer?"
+    "ClusterIP is internal-only. NodePort exposes on a static port on
+     each node. LoadBalancer creates a cloud LB in production."
+
+Interview 30-sec answer for Stage 5:
+  "I deployed the Flask app to Minikube using a Deployment with 2 replicas
+   for high availability and a NodePort Service for external access. I loaded
+   the Docker image locally using minikube image load and verified pods were
+   running and endpoints responsive via kubectl and minikube service tunnel."
+
+Git commands after Stage 5:
+  git add flask-cicd-app/k8s/
+  git commit -m "Stage 5: Add K8s deployment and service manifests for Minikube"
+  git push origin main
+
+Stage 5 final status: COMPLETED
+
+
+================================================================================
+                    STAGE 6: K8S OPS + FULL CI/CD AUTOMATION (NEXT)
+================================================================================
+
+Goal:
+  Add production-readiness features to K8s and automate CD from Jenkins.
+
+================================================================================
+              STAGE 6 PART A: K8S OPS (COMPLETED CHECKLIST)
+================================================================================
+
+What was done:
+  - Added liveness and readiness probes to deployment
+  - Added resource requests and limits
+  - Created PV + PVC for persistent storage
+  - Added volume mount in deployment
+  - Added tolerations for taint-based scheduling
+  - Tested manual scaling and HPA
+
+Execution output:
+  kubectl get pods (after applying Stage 6A changes):
+    flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running  (old replica)
+    flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running  (old replica)
+    flask-cicd-app-7df54c8955-hm6qg   0/1  Running  (new pod, readiness probe not passed yet)
+
+  Note: 3rd pod shows 0/1 READY because readiness probe hasn't passed yet
+  (initialDelaySeconds: 5, then checks every 10s). Once /health responds
+  200 OK, it becomes 1/1. Old pods stay until new ones are ready = rolling update.
+
+--------------------------------------------------------------------------------
+YAML STRUCTURE GUIDE (interview must-know)
+--------------------------------------------------------------------------------
+
+  Deployment YAML structure (indentation matters):
+
+    apiVersion / kind / metadata     ← top-level resource info
+    spec:                            ← Deployment spec
+      replicas                       ← how many pods
+      selector                       ← how Deployment finds its Pods
+      template:                      ← Pod blueprint
+        metadata:
+          labels                     ← Pod labels (must match selector)
+        spec:                        ← Pod spec level
+          containers:                ← list of containers
+            - name / image / ports   ← container basics
+              livenessProbe          ← inside container (per-container)
+              readinessProbe         ← inside container (per-container)
+              resources              ← inside container (per-container)
+              volumeMounts           ← inside container (WHERE to mount)
+          volumes:                   ← pod level (WHAT to mount, shared)
+          tolerations:               ← pod level (scheduling rules)
+
+  Rule of thumb:
+    - Things specific to ONE container → inside containers list
+    - Things shared across pod / scheduling → same level as containers
+
+--------------------------------------------------------------------------------
+1. LIVENESS & READINESS PROBES
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml inside container spec:
+
+    livenessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 10
+      periodSeconds: 15
+
+    readinessProbe:
+      httpGet:
+        path: /health
+        port: 5000
+      initialDelaySeconds: 5
+      periodSeconds: 10
+
+  Liveness probe:
+    - "Is this container alive?"
+    - If fails → K8s RESTARTS the container
+    - Catches: app hung, deadlocked, zombie process
+
+  Readiness probe:
+    - "Is this container ready to serve traffic?"
+    - If fails → K8s REMOVES pod from Service (no traffic sent)
+    - Does NOT restart. Just waits.
+    - Catches: app still starting, warming cache, loading config
+
+  Why both?
+    - Liveness handles crashes/hangs (restart)
+    - Readiness handles slow starts (hold traffic)
+    - Together = zero-downtime deployments
+
+  Probe types (interview):
+    httpGet   → HTTP request to endpoint (we used this)
+    tcpSocket → TCP connection check
+    exec      → Run a command inside container
+
+  Interview Q: "Liveness vs Readiness probe?"
+    "Liveness restarts unhealthy containers. Readiness stops traffic to
+     pods not yet ready. Both are needed: liveness for self-healing,
+     readiness for zero-downtime deployments."
+
+--------------------------------------------------------------------------------
+2. RESOURCE REQUESTS & LIMITS
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml inside container spec:
+
+    resources:
+      requests:
+        cpu: "100m"
+        memory: "128Mi"
+      limits:
+        cpu: "250m"
+        memory: "256Mi"
+
+  Requests:
+    - Minimum guaranteed resources
+    - K8s scheduler uses this to decide which node to place pod on
+    - 100m = 0.1 CPU core (10% of one core)
+    - 128Mi = 128 megabytes
+
+  Limits:
+    - Maximum allowed resources
+    - CPU exceeded → throttled (slowed down)
+    - Memory exceeded → OOMKilled (pod killed and restarted)
+    - 250m = 0.25 CPU core
+    - 256Mi = 256 megabytes
+
+  Why set both?
+    - Without requests: scheduler can't plan, pods may land on overloaded nodes
+    - Without limits: one pod can eat all node resources, starving others
+
+  Interview Q: "What happens if a pod exceeds its memory limit?"
+    "It gets OOMKilled — Kubernetes kills it and restarts based on
+     restartPolicy. This prevents one pod from consuming all node memory."
+
+--------------------------------------------------------------------------------
+3. PERSISTENT VOLUME (PV) & PERSISTENT VOLUME CLAIM (PVC)
+--------------------------------------------------------------------------------
+
+  Created k8s/pv-pvc.yaml:
+
+    PV (PersistentVolume):
+      - Cluster-level storage resource (like a hard disk)
+      - Provisioned by admin or dynamically
+      - capacity: 100Mi, accessModes: ReadWriteOnce
+      - hostPath: /data/flask-app (local path on node, dev only)
+
+    PVC (PersistentVolumeClaim):
+      - Pod's request for storage
+      - Specifies how much and what access mode
+      - K8s binds PVC to a matching PV automatically
+
+  Mounted in deployment.yaml:
+    volumeMounts (inside container):
+      - name: app-data
+        mountPath: /app/data     ← path INSIDE container where data appears
+
+    volumes (pod spec level):
+      - name: app-data
+        persistentVolumeClaim:
+          claimName: flask-pvc   ← links to PVC created in pv-pvc.yaml
+
+  Flow:
+    PV created → PVC created → K8s binds them → Pod mounts PVC → /app/data works
+
+  Access modes (interview):
+    ReadWriteOnce (RWO)  → One node reads/writes
+    ReadOnlyMany (ROX)   → Many nodes read only
+    ReadWriteMany (RWX)  → Many nodes read/write
+
+  hostPath vs cloud storage:
+    hostPath  → local node directory (dev/testing only, data lost if node dies)
+    EBS/EFS   → AWS persistent block/file storage
+    Azure Disk → Azure managed persistent disk
+    GCE PD    → Google persistent disk
+
+  Interview Q: "What is PV/PVC?"
+    "PV is cluster-level storage, PVC is a pod's request for that storage.
+     K8s binds them together. I used hostPath for local dev; in production
+     you'd use cloud-backed storage like EBS or managed disks."
+
+--------------------------------------------------------------------------------
+4. TAINTS & TOLERATIONS
+--------------------------------------------------------------------------------
+
+  Added to deployment.yaml at pod spec level:
+
+    tolerations:
+      - key: "env"
+        operator: "Equal"
+        value: "production"
+        effect: "NoSchedule"
+
+  Taint (on node):
+    - "No Entry" sign on a node
+    - Command: kubectl taint nodes minikube env=production:NoSchedule
+    - Blocks pods from scheduling on this node
+
+  Toleration (on pod):
+    - "Special pass" that lets pod bypass the taint
+    - Pod says "I can handle env=production"
+
+  Without toleration → pod blocked from tainted node
+  With toleration    → pod can schedule on tainted node
+
+  Taint effects (interview):
+    NoSchedule        → New pods blocked, existing pods stay
+    PreferNoSchedule  → K8s tries to avoid, not guaranteed
+    NoExecute         → New pods blocked AND existing pods evicted
+
+  Real-world use cases:
+    - GPU nodes: taint gpu=true → only ML pods with toleration go there
+    - Production nodes: taint env=prod → only prod apps
+    - Control-plane: already tainted so user pods don't run there
+
+  Commands:
+    kubectl taint nodes minikube env=production:NoSchedule      ← add taint
+    kubectl taint nodes minikube env=production:NoSchedule-     ← remove taint
+
+  Interview Q: "What are taints and tolerations?"
+    "Taints are on nodes to repel pods; tolerations are on pods to allow
+     scheduling on tainted nodes. We use them to dedicate nodes for specific
+     workloads like GPU or production environments."
+
+--------------------------------------------------------------------------------
+5. SCALING
+--------------------------------------------------------------------------------
+
+  Manual scaling:
+    kubectl scale deployment flask-cicd-app --replicas=4
+    kubectl get pods      ← shows 4 pods
+    kubectl scale deployment flask-cicd-app --replicas=2
+    kubectl get pods      ← back to 2 pods
+
+  HPA (Horizontal Pod Autoscaler):
+    Prerequisite: minikube addons enable metrics-server
+    kubectl autoscale deployment flask-cicd-app --cpu-percent=50 --min=2 --max=5
+    kubectl get hpa
+
+    How it works:
+      - Watches average CPU usage across all pods
+      - If CPU > 50% target → adds pods (up to max=5)
+      - If CPU drops → removes pods (down to min=2)
+      - Requires resource requests to be set (we did this)
+
+  Interview Q: "How does HPA work?"
+    "HPA monitors CPU/memory metrics via metrics-server. When average usage
+     exceeds the target threshold, it scales up replicas. When usage drops,
+     it scales down. It requires resource requests to calculate percentages."
+
+--------------------------------------------------------------------------------
+Stage 6A Interview 30-sec answer:
+  "I enhanced the deployment with liveness and readiness probes for self-healing
+   and zero-downtime updates, set resource requests/limits for fair scheduling,
+   added PV/PVC for persistent storage, configured tolerations for taint-based
+   scheduling, and tested both manual scaling and HPA for auto-scaling based
+   on CPU utilization."
+
+Git commands after Stage 6A:
+  git add flask-cicd-app/k8s/
+  git commit -m "Stage 6A: Add probes, resources, PV/PVC, tolerations to K8s manifests"
+  git push origin main
+
+--------------------------------------------------------------------------------
+6. ROLLING UPDATE (bonus — happened during Stage 6A apply)
+--------------------------------------------------------------------------------
+
+  What triggered it:
+    - We changed deployment.yaml (added probes, resources, volume, tolerations)
+    - kubectl apply detected pod template changed
+    - K8s started replacing old pods with new ones gradually
+
+  What we saw:
+    flask-cicd-app-7cf86cf4c8-lqbfz   1/1  Running   ← old pod
+    flask-cicd-app-7cf86cf4c8-w22g5   1/1  Running   ← old pod
+    flask-cicd-app-7df54c8955-hm6qg   0/1  Running   ← new pod (readiness pending)
+
+  How rolling update works:
+    1) Create new pod with updated config
+    2) Wait for readiness probe to pass (0/1 → 1/1)
+    3) Route traffic to new pod
+    4) Kill one old pod
+    5) Repeat until all old pods replaced
+
+  Where is it defined?
+    - It is the DEFAULT strategy for Deployments (you don't need to write it)
+    - Explicit version:
+        spec:
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxSurge: 1           ← max 1 extra pod during update
+              maxUnavailable: 0     ← never fewer than desired count
+
+  Rolling Update vs Recreate:
+    RollingUpdate → gradual replacement, zero downtime (default)
+    Recreate      → kill all old pods first, then create new = DOWNTIME
+
+  When does rolling update trigger?
+    - Image changed          → yes
+    - Probes/resources added → yes
+    - Labels/env changed     → yes
+    - replicas changed       → NO (that's just scaling, existing pods stay)
+
+  Interview Q: "What is a rolling update?"
+    "Default deployment strategy in K8s. When pod template changes, K8s
+     gradually replaces old pods with new ones — creating first, waiting
+     for readiness, then terminating old. Ensures zero downtime."
+
+Stage 6A final status: COMPLETED
+
+
+================================================================================
+              STAGE 6 PART B: FULL CI/CD AUTOMATION (NEXT)
+================================================================================
+
+Goal:
+  Automate deployment from Jenkins to Kubernetes.
+  After this: git push → webhook → Jenkins test/build/deploy → app updated in K8s.
+
+What was done:
+  - Added "Deploy to K8s" stage to Jenkinsfile
+  - Full pipeline now: Checkout → Test → Build → Deploy
+  - Deploy stage uses kubectl set image + rollout status
+
+Commands in Deploy stage:
+  kubectl set image deployment/flask-cicd-app flask-cicd=flask-cicd-app:build-X
+    Why: Updates the running deployment to use the newly built image tag.
+    This triggers a rolling update — old pods replaced with new ones.
+
+  kubectl rollout status deployment/flask-cicd-app --timeout=60s
+    Why: Waits and confirms the rolling update completed successfully.
+    If rollout fails within 60s, this command returns non-zero = stage fails.
+
+  kubectl get pods -l app=flask-cicd
+    Why: Shows final pod status after deployment for verification.
+
+--------------------------------------------------------------------------------
+WHY JENKINS CAN'T REACH MINIKUBE LOCALLY (important to understand)
+--------------------------------------------------------------------------------
+
+  Your setup:
+    Jenkins   → runs inside Docker container (my-jenkins)
+    Minikube  → runs inside Docker container (minikube)
+    kubeconfig → points to 127.0.0.1:1793
+
+  Problem:
+    From inside Jenkins container, 127.0.0.1 = Jenkins itself, NOT Minikube.
+    They are isolated Docker containers with separate network stacks.
+    kubectl from Jenkins can't reach Minikube API server.
+
+  This is a LOCAL Docker-in-Docker networking limitation, NOT a CI/CD design flaw.
+
+  HOW WE FIXED IT (full automation achieved):
+    Step 1: Connected Jenkins to Minikube's Docker network
+      docker network connect minikube my-jenkins
+      Why: Jenkins was on "jenkins" network, Minikube on "minikube" network.
+           They couldn't see each other. Now Jenkins has IP 192.168.49.3 on
+           the minikube network and can reach Minikube at 192.168.49.2.
+
+    Step 2: Installed kubectl inside Jenkins container
+      docker exec --user root my-jenkins bash -c "curl -kLO <kubectl-url> && mv kubectl /usr/local/bin/"
+      Why: Jenkins didn't have kubectl binary to run K8s commands.
+
+    Step 3: Copied kubeconfig + TLS certs into Jenkins
+      docker cp ~/.minikube/ca.crt my-jenkins:/var/jenkins_home/.minikube/ca.crt
+      docker cp ~/.minikube/profiles/minikube/client.crt my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.crt
+      docker cp ~/.minikube/profiles/minikube/client.key my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.key
+      Why: kubectl needs TLS certificates to authenticate with K8s API.
+
+    Step 4: Created kubeconfig inside Jenkins pointing to Minikube internal IP
+      server: https://192.168.49.2:8443 (NOT 127.0.0.1)
+      Why: 127.0.0.1 from inside Jenkins = Jenkins itself. 192.168.49.2 = Minikube.
+
+    Step 5: Verified from inside Jenkins
+      docker exec my-jenkins kubectl get nodes → minikube Ready
+      docker exec my-jenkins kubectl get deployment → flask-cicd-app 2/2
+
+  Result: Jenkins can now run kubectl commands against Minikube.
+          Deploy stage in Jenkinsfile works end-to-end.
+
+  In production this networking issue doesn't exist because:
+    - Jenkins and K8s cluster share the same VPC/network
+    - Or Jenkins uses a K8s service account token + cluster API URL
+    - Or GitOps tools (ArgoCD/FluxCD) handle deployment separately
+
+  NOTE FOR FUTURE CHATS:
+    If Docker Desktop restarts, Minikube may need restart (minikube start).
+    Jenkins kubectl setup persists inside the container but network connect
+    may need to be re-run: docker network connect minikube my-jenkins
+    Also re-check Minikube IP hasn't changed: docker inspect minikube
+
+--------------------------------------------------------------------------------
+FULL CI/CD PIPELINE FLOW (end-to-end interview answer)
+--------------------------------------------------------------------------------
+
+  1) Developer pushes code to GitHub
+  2) GitHub webhook sends POST to Jenkins /github-webhook/
+  3) Jenkins receives webhook, starts pipeline
+  4) Checkout stage: pulls latest code from GitHub
+  5) Install & Test stage: runs pytest inside Python Docker container
+  6) Docker Build stage: builds new image tagged with build number
+  7) Deploy stage: kubectl set image triggers rolling update in K8s
+  8) K8s creates new pods with new image, waits for readiness probes
+  9) Old pods terminated after new ones are ready
+  10) App is live with zero downtime
+
+  Full flow in one line:
+    git push → webhook → Jenkins (test → build → deploy) → K8s rolling update → app live
+
+Interview 30-sec answer for Stage 6B:
+  "I added a Deploy stage to the Jenkinsfile that uses kubectl to update
+   the Kubernetes deployment with the newly built image tag. It triggers
+   a rolling update and verifies rollout status. The full pipeline is:
+   push to GitHub triggers webhook, Jenkins runs tests, builds Docker
+   image, and deploys to Kubernetes with zero downtime."
+
+Interview Q: "How does Jenkins deploy to Kubernetes?"
+  "Jenkins uses kubectl set image to update the deployment with the new
+   image tag. This triggers a rolling update. We verify with kubectl
+   rollout status. In production, Jenkins uses a K8s service account
+   or we use GitOps tools like ArgoCD for the deployment step."
+
+Interview Q: "What is GitOps?"
+  "GitOps means Git is the single source of truth for infrastructure
+   and deployment. Tools like ArgoCD watch the Git repo and auto-deploy
+   when manifests change. Jenkins handles CI (build/test), ArgoCD
+   handles CD (deploy). Separation of concerns."
+
+Git commands after Stage 6B:
+  git add flask-cicd-app/Jenkinsfile CICD_Stage1_Notes.txt
+  git commit -m "Stage 6B: Add Deploy to K8s stage, complete CI/CD pipeline"
+  git push origin main
+
+Stage 6B final status: COMPLETED
+
+
+================================================================================
+              PROJECT COMPLETE — FULL CI/CD PIPELINE
+================================================================================
+
+Stages completed:
+  Stage 1 ✓  Python Flask app + Git
+  Stage 2 ✓  Dockerfile + containerization
+  Stage 3 ✓  Jenkinsfile (CI pipeline)
+  Stage 4 ✓  GitHub webhook trigger
+  Stage 5 ✓  Kubernetes deployment on Minikube
+  Stage 6A ✓ K8s ops (probes, resources, PV/PVC, taints, scaling)
+  Stage 6B ✓ Full CI/CD automation (Deploy stage in Jenkinsfile)
+
+THE interview answer (memorize this):
+  "I built an end-to-end CI/CD pipeline for a Python Flask microservice.
+   Code is pushed to GitHub, a webhook triggers Jenkins which runs unit
+   tests in a Python Docker agent, builds the Docker image with build
+   number tags, and deploys to a Kubernetes cluster using kubectl. The
+   deployment uses rolling updates with liveness and readiness probes
+   for zero downtime. I also configured resource limits, persistent
+   storage with PV/PVC, and horizontal pod autoscaling."
+
+Resume line:
+  "Designed and implemented end-to-end CI/CD pipeline using Git, Jenkins,
+   Docker, and Kubernetes (Minikube) for a Python Flask microservice with
+   automated testing, containerization, webhook triggers, rolling updates,
+   health probes, persistent storage, and auto-scaling."
+
+================================================================================
+STAGE 6C: IMAGE TRANSFER — DinD TO MINIKUBE (THE TRICKY PART)
+================================================================================
+
+PROBLEM: TWO SEPARATE DOCKER DAEMONS
+-------------------------------------
+  Jenkins (via jenkins-docker DinD) and Minikube each run their own Docker
+  daemon. Images built by Jenkins live in DinD's daemon. Minikube's K8s
+  needs images in Minikube's Docker daemon. They can't see each other.
+
+  Symptom: kubectl set image succeeds, but pods show "ErrImageNeverPull"
+           because Minikube's Docker doesn't have the image.
+
+  Architecture:
+    Docker Desktop (Host)
+      ├── my-jenkins      → Jenkins master, has kubectl
+      ├── jenkins-docker  → DinD, Docker daemon #2 (images built HERE)
+      └── minikube        → Docker daemon #3 (images needed HERE)
+
+SOLUTION: IMAGE-LOADER POD
+---------------------------
+  Created k8s/image-loader.yaml — a temporary pod with Docker socket mounted:
+
+    volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock   ← Minikube's Docker socket
+
+  /var/run/docker.sock is the API doorway to Minikube's Docker daemon.
+  Mounting it gives the pod direct access to run Docker commands against
+  Minikube's Docker.
+
+DEPLOY STAGE STEPS (in Jenkinsfile):
+--------------------------------------
+  1. docker save flask-cicd-app:build-N -o /tmp/flask-image.tar
+     → Exports image from DinD as a tar file onto Jenkins master's disk
+
+  2. kubectl delete pod image-loader --ignore-not-found
+     → Clean up any leftover pod from previous builds
+
+  3. kubectl apply -f k8s/image-loader.yaml
+     → Creates image-loader pod (docker:cli image + Docker socket mount)
+
+  4. kubectl wait --for=condition=Ready pod/image-loader --timeout=120s
+     → Waits until pod is running and ready
+
+  5. kubectl cp /tmp/flask-image.tar image-loader:/tmp/flask-image.tar
+     → Copies the tar from Jenkins into the pod via K8s API
+
+  6. kubectl exec image-loader -- docker load -i /tmp/flask-image.tar
+     → Loads image into MINIKUBE's Docker (via mounted socket)
+     → Now Minikube has the image!
+
+  7. kubectl delete pod image-loader --ignore-not-found
+     → Cleanup the temporary pod
+
+  8. rm -f /tmp/flask-image.tar
+     → Cleanup the tar file
+
+  9. kubectl set image deployment/flask-cicd-app flask-cicd=flask-cicd-app:build-N
+     → Updates the deployment to use the new image (rolling update starts)
+
+  10. kubectl rollout status deployment/flask-cicd-app --timeout=120s
+      → Waits for rolling update to complete (new pods healthy)
+
+  11. kubectl get pods -l app=flask-cicd
+      → Shows final pod status as confirmation
+
+KEY CONCEPTS:
+--------------
+  Docker socket (/var/run/docker.sock):
+    - Unix socket file that Docker daemon listens on
+    - Any process with access to this file can control Docker
+    - Mounting it into a container = giving that container Docker access
+    - Security risk in production (container can control the host's Docker)
+
+  docker save / docker load:
+    - save: exports image as a .tar archive (all layers + metadata)
+    - load: imports a .tar archive back into a Docker daemon
+    - Used for offline image transfer or air-gapped environments
+
+  kubectl cp:
+    - Copies files between local machine and a pod
+    - Uses tar under the hood (pod must have tar binary)
+    - Goes through the K8s API server (slower than direct copy)
+
+  hostPath volume:
+    - Mounts a file/directory from the HOST NODE into a pod
+    - NOT portable (depends on what's on the specific node)
+    - Used here to access Minikube's Docker socket from inside a pod
+
+WHY 3.5 MINUTES?
+-----------------
+  docker save  → packaging ~200MB image → ~15-20s
+  kubectl cp   → transferring tar via K8s API → ~60-90s (slowest part)
+  docker load  → unpacking layers → ~20-30s
+  rollout      → starting pods + health checks → ~30-60s
+
+IN PRODUCTION:
+--------------
+  You would NOT do this. Instead:
+    Jenkins builds → docker push to DockerHub/ECR/GCR → K8s pulls from registry
+  The image-loader is a local workaround for isolated Docker daemons.
+
+ERRORS ENCOUNTERED AND FIXED:
+-------------------------------
+  Error 1: bitnami/kubectl Docker agent — "localhost:8080 refused"
+    Cause: Deploy stage used a Docker agent (bitnami/kubectl) which created
+           a NEW container without kubeconfig. kubectl defaulted to localhost:8080.
+    Fix: Changed to agent any (runs on Jenkins master where kubectl is configured)
+
+  Error 2: ErrImageNeverPull — rollout timed out
+    Cause: Image built in DinD, not in Minikube's Docker. imagePullPolicy: Never
+           means Minikube won't try a registry, just looks locally.
+    Fix: Added image-loader pod to transfer image from DinD → Minikube's Docker
+
+INTERVIEW Q: "How did you handle image transfer in your local CI/CD?"
+  "Jenkins and Minikube ran in separate Docker containers with isolated
+   Docker daemons. Images built in Jenkins' DinD weren't visible to
+   Minikube. I created a helper pod that mounts the Kubernetes node's
+   Docker socket via hostPath volume. The pipeline saves the image as
+   a tar file, kubectl cp's it into the pod, and runs docker load to
+   import it into Minikube's Docker daemon. In production, a container
+   registry like ECR or DockerHub eliminates this problem entirely."
+
+INTERVIEW Q: "What is a Docker socket?"
+  "It's the Unix socket file (/var/run/docker.sock) that the Docker
+   daemon listens on. Any process that can access this socket can send
+   Docker API commands — build, run, pull, push, etc. Mounting it into
+   a container gives that container control over the host's Docker.
+   It's powerful but also a security concern in production."
+
+FINAL PIPELINE SUMMARY:
+-------------------------
+  git push → GitHub webhook → Jenkins triggered →
+    Stage 1: Checkout (pull code)
+    Stage 2: Install & Test (Python container, pytest)
+    Stage 3: Docker Build (build image in DinD)
+    Stage 4: Deploy (save tar → image-loader pod → docker load → kubectl set image → rolling update)
+  → App deployed to Kubernetes with zero downtime
+
+================================================================================
+PROJECT COMPLETE — FULL END-TO-END CI/CD PIPELINE
+================================================================================
+
+================================================================================
+RECOVERY NOTES: DOCKER DESKTOP RESET (IMPORTANT)
+================================================================================
+
+What happened:
+  Docker Desktop state was reset. All local containers, images, and volumes
+  were gone (my-jenkins, jenkins-docker, minikube, app images, jenkins-data).
+
+Symptoms observed:
+  - docker ps -a showed no containers
+  - docker volume ls showed no volumes
+  - Jenkins setup wizard appeared again
+  - Previous job config was missing
+
+What was rebuilt (same architecture as before):
+  1) Created Docker network:
+       docker network create jenkins
+  2) Started DinD:
+       docker run --name jenkins-docker ... docker:dind
+  3) Rebuilt and started Jenkins:
+       image: my-jenkins
+       container: my-jenkins
+  4) Started Minikube (docker driver):
+       minikube start --driver=docker
+  5) Reconnected Jenkins to Minikube network:
+       docker network connect minikube my-jenkins
+  6) Reinstalled kubectl inside Jenkins and restored kubeconfig + certs
+  7) Rebuilt flask image and loaded into minikube:
+       docker build -t flask-cicd-app:latest .
+       minikube image load flask-cicd-app:latest
+  8) Reapplied K8s manifests
+
+PVC/PV issue after rebuild:
+  Error:
+    Pods stuck Pending -> "unbound immediate PersistentVolumeClaims"
+  Cause:
+    PVC requested default storageClass "standard", PV had none.
+  Fix:
+    Set storageClassName: "" in BOTH PV and PVC, then recreate them.
+
+Jenkins plugin installation issue:
+  Error in setup wizard:
+    "No such plugin: cloudbees-folder"
+  Root cause:
+    Jenkins update site SSL trust failed:
+    PKIX path building failed / certificate_unknown
+    (corporate TLS/interception chain not trusted by Jenkins Java truststore)
+  Meaning:
+    Jenkins cannot fetch plugin metadata over HTTPS reliably during setup.
+
+Current status after recovery:
+  - my-jenkins: running
+  - jenkins-docker: running
+  - minikube: running
+  - kubectl from Jenkins: working
+  - app pods: running after PV/PVC fix
+
+What user must re-do once Jenkins UI opens:
+  - Unlock Jenkins
+  - Complete setup wizard (or skip plugin batch if it fails)
+  - Recreate pipeline job:
+      name: flask-cicd-pipeline
+      repo: https://github.com/adityaverma4444/ci-cd-app.git
+      branch: */main
+      script path: flask-cicd-app/Jenkinsfile
+  - Enable webhook trigger again
+
+Interview line for this incident:
+  "I handled a full local environment reset by rebuilding Jenkins, DinD,
+   Minikube, kubeconfig, and Kubernetes resources. I also diagnosed Jenkins
+   plugin installation failures caused by SSL trust issues (PKIX) in a
+   corporate network and recovered the pipeline setup without changing
+   application code."
+
+================================================================================
+SIMPLE EXPLANATION (EASY ENGLISH) — WHY SO MANY CONTAINERS
+================================================================================
+
+Goal:
+  Keep this section as a quick revision before interviews.
+
+Why multiple containers exist in local setup:
+  1) my-jenkins
+     - Jenkins UI + pipeline engine
+     - Runs jobs and orchestrates all stages
+
+  2) jenkins-docker (DinD = Docker-in-Docker)
+     - Separate Docker daemon used by Jenkins for docker build commands
+     - Jenkins itself is a container, so it needs a Docker engine container
+
+  3) minikube
+     - Local Kubernetes cluster running as a container
+     - Deploys our Flask app pods and service
+
+In one line:
+  Jenkins controls pipeline, DinD builds images, Minikube runs Kubernetes.
+
+Why final CD stage was tricky:
+  - Jenkins built image in DinD daemon
+  - Kubernetes looked for image in Minikube daemon
+  - These daemons are separate -> image not found in Minikube
+  - Result: rollout timeout / ErrImageNeverPull
+
+How we solved it:
+  - Saved image tar from Jenkins side
+  - Copied tar into helper pod (image-loader)
+  - Loaded image into Minikube Docker daemon
+  - Then kubectl set image + rollout succeeded
+
+Production vs local:
+  - Local: need image transfer workaround (because isolated daemons)
+  - Production: Jenkins pushes image to registry (ECR/DockerHub), K8s pulls from registry
+
+Issue during Jenkins plugin install:
+  - Error: No such plugin: cloudbees-folder
+  - Root cause: SSL trust issue (PKIX) to Jenkins update site in network
+  - Meaning: Jenkins could not fetch plugin metadata over HTTPS
+
+Quick interview answer:
+  "In local Docker-based CI/CD, Jenkins, DinD, and Minikube run in separate
+   containers. I handled image visibility issues between Docker daemons by
+   transferring image tar into Minikube before rollout. I also diagnosed
+   Jenkins plugin setup failures caused by SSL trust (PKIX) in a restricted
+   network."
+
+================================================================================
+STAGE 6B (POST-6A) — WHAT REMAINED + WHY IMAGE-LOADER WAS NEEDED
+================================================================================
+
+What was completed in 6A:
+  - K8s app deployment with probes, resources, PV/PVC, tolerations, scaling topics.
+
+What remained after 6A:
+  - Full CD automation from Jenkins to Minikube.
+  - Goal: git push -> webhook -> Jenkins test/build/deploy without manual kubectl.
+
+Core 6B problem (most important):
+  - jenkins-docker (DinD) and minikube use different Docker daemons.
+  - Jenkins build creates image in DinD daemon.
+  - Kubernetes needs image in Minikube daemon.
+  - They do not share image storage.
+  - Symptom: ErrImageNeverPull / rollout timeout.
+
+Why DinD created image transfer problem:
+  - Image built by Jenkins -> stored in jenkins-docker Docker.
+  - Image required by K8s -> must exist in minikube Docker.
+  - No shared image cache between these daemons in local setup.
+
+Bridge solution used:
+  - Temporary image-loader pod + mounted Docker socket.
+  - docker save (Jenkins side) -> kubectl cp -> docker load (Minikube side).
+  - Then kubectl set image + rollout status.
+  - This made deployment fully automated in local environment.
+
+Extra 6B issue fixed:
+  - Deploy stage initially used bitnami/kubectl docker agent.
+  - That container had no kubeconfig and defaulted to localhost:8080.
+  - Fix: use agent any for Deploy and run kubectl on Jenkins container where kubeconfig exists.
+
+================================================================================
+PRODUCTION ANSWER — INSTALL JENKINS LOCALLY OR NOT?
+================================================================================
+
+Short answer:
+  - Local install of Jenkins is fine for learning and can simplify local networking.
+  - In production, Jenkins is usually NOT a desktop local install.
+
+Typical production patterns:
+  - Jenkins on VM/server (Linux) as a managed service process.
+  - Jenkins containerized on server or Kubernetes.
+  - Builds push images to registry (ECR/GCR/ACR/DockerHub/Harbor).
+  - Kubernetes pulls images from registry (no image-loader workaround).
+
+Interview-safe line:
+  "For my local learning lab, Dockerized Jenkins + Minikube required image transfer
+   handling. In production, Jenkins runs on dedicated infra and uses a container
+   registry, so Kubernetes pulls images directly and this local DinD-to-Minikube
+   transfer issue does not occur."
+
+================================================================================
+STAGE 7 — HELM MIGRATION (Kubernetes Package Manager)
+================================================================================
+
+What is Helm?
+  - Helm is like apt/yum but for Kubernetes.
+  - Without Helm: you write multiple YAML files and apply them one by one.
+  - With Helm: you write templates with {{ placeholders }}, put all config in
+    one values.yaml, and deploy everything with a single command.
+  - Interview one-liner: "Helm is a Kubernetes package manager that packages
+    manifests into reusable charts with templated values."
+
+Key Helm Concepts:
+  - Chart     = a folder/package containing templates + config
+  - Templates = K8s YAML files with {{ .Values.xxx }} placeholders
+  - values.yaml = single file with all configurable parameters
+  - Release   = a running instance of a chart (has revision history)
+  - _helpers.tpl = reusable Go template functions for names and labels
+
+What we did:
+
+  Step 1: Created chart skeleton
+    Command: helm create flask-cicd-app
+    Generated folder: flask-cicd-app/helm/flask-cicd-app/
+    Structure:
+      Chart.yaml          -- metadata (chart name, version)
+      values.yaml         -- all configurable values
+      templates/
+        deployment.yaml   -- K8s Deployment with {{ placeholders }}
+        service.yaml      -- K8s Service with {{ placeholders }}
+        _helpers.tpl      -- reusable name/label generators
+        pvc.yaml          -- we added this ourselves for PersistentVolumeClaim
+        NOTES.txt         -- printed after helm install
+        tests/            -- helm test connection pod
+
+  Step 2: Configured values.yaml
+    This is where Helm's power lives. Instead of editing 3-4 YAML files,
+    you edit ONE file. We set:
+      replicaCount: 2
+      image.repository: flask-cicd-app
+      image.pullPolicy: Never
+      image.tag: latest
+      service.type: NodePort
+      service.port: 5000
+      resources (requests/limits for CPU and memory)
+      livenessProbe and readinessProbe (path: /health)
+      volumes (PVC: flask-pvc-helm2)
+      volumeMounts (mountPath: /app/data)
+      tolerations (key: env, value: production)
+
+  Step 3: How templates pull values (the core concept)
+    In templates/deployment.yaml:
+      image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+    Helm replaces this with:
+      image: "flask-cicd-app:latest"
+    Same for replicas:
+      replicas: {{ .Values.replicaCount }}  -->  replicas: 2
+    The template is the skeleton, values.yaml is the brain.
+
+  Step 4: Created templates/pvc.yaml
+    Helm didn't generate this by default. We added it to create the
+    PersistentVolumeClaim via Helm. Named flask-pvc-helm2 to avoid
+    conflict with old manually-created flask-pvc.
+
+  Step 5: Set fullnameOverride and serviceAccount.create
+    fullnameOverride: flask-cicd-helm2
+      Controls the name prefix for all resources Helm creates.
+    serviceAccount.create: false
+      We had deleted the serviceaccount.yaml template earlier.
+      Helm's deployment template referenced a SA that didn't exist.
+      Setting create: false makes pods use the "default" SA.
+      This fixed: "serviceaccount flask-cicd-helm2-flask-cicd-app not found"
+
+  Step 6: Deployed to helm-lab namespace
+    kubectl create namespace helm-lab
+    Used separate namespace to keep Helm deployment isolated from
+    old kubectl-applied deployment in default namespace.
+
+Commands used and what each does:
+
+  1) helm template (dry run / preview)
+     helm template flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+       -f helm/flask-cicd-app/values.yaml
+     - Renders all templates locally, prints final YAML to terminal.
+     - Nothing is sent to Kubernetes. It's a preview.
+     - We used this to verify the YAML looks correct before deploying.
+
+  2) helm upgrade --install (deploy)
+     helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+       -f helm/flask-cicd-app/values.yaml
+     - If release does NOT exist -> install it (first time).
+     - If release already exists -> upgrade it (update values/templates).
+     - This single command replaces kubectl apply -f for all files.
+     - In CI/CD, always use upgrade --install for idempotency.
+
+  3) helm list -n helm-lab
+     - Shows all Helm releases in the namespace.
+     - Output: release name, namespace, revision, status, chart version.
+
+  4) helm uninstall flask-cicd-helm2 -n helm-lab
+     - Deletes ALL resources the chart created in one command.
+     - Replaces running kubectl delete for each resource separately.
+
+  5) helm rollback flask-cicd-helm2 <revision>
+     - Rolls back to a previous revision.
+     - Helm keeps history of all revisions.
+     - View history with: helm history flask-cicd-helm2
+
+Error we hit and fix:
+
+  Error: PersistentVolumeClaim "flask-pvc" exists and cannot be imported
+         invalid ownership metadata; missing key "app.kubernetes.io/managed-by"
+  Cause: In stages 5-6 we manually created flask-pvc via kubectl apply.
+         That PVC had no Helm labels. Helm refuses to adopt existing
+         resources it didn't create.
+  Fix:   Changed PVC name to flask-pvc-helm2 so Helm creates its own PVC.
+  Interview point: "Helm tracks ownership via labels
+    (app.kubernetes.io/managed-by: Helm) and annotations
+    (meta.helm.sh/release-name). Pre-existing resources without these
+    labels cause ownership conflicts."
+
+  Error: serviceaccount "flask-cicd-helm2-flask-cicd-app" not found
+  Cause: Deployment template referenced a ServiceAccount that didn't exist
+         because the SA template file was deleted, but values.yaml still
+         had serviceAccount.create: true (due to duplicate keys).
+  Fix:   Set serviceAccount.create: false so pods use default SA.
+
+Old Way vs Helm Way:
+
+  Deploy:
+    Old: kubectl apply -f deployment.yaml + service.yaml + pvc.yaml
+    Helm: helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app
+
+  Change replicas:
+    Old: edit deployment.yaml, then kubectl apply again
+    Helm: change replicaCount in values.yaml, then helm upgrade
+
+  Change image tag:
+    Old: edit deployment.yaml, then kubectl apply again
+    Helm: helm upgrade ... --set image.tag=build-20
+
+  Delete everything:
+    Old: kubectl delete deploy, svc, pvc separately
+    Helm: helm uninstall flask-cicd-helm2
+
+  Rollback:
+    Old: not easy, manual
+    Helm: helm rollback flask-cicd-helm2 1
+
+How next deployments look with Helm:
+
+  New image version:
+    helm upgrade flask-cicd-helm2 helm/flask-cicd-app --set image.tag=build-25
+
+  Scale up:
+    helm upgrade flask-cicd-helm2 helm/flask-cicd-app --set replicaCount=5
+
+  Different environments (dev vs prod):
+    helm upgrade ... -f values-dev.yaml    (dev settings)
+    helm upgrade ... -f values-prod.yaml   (prod settings)
+
+  In Jenkins pipeline (future):
+    sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
+        --set image.tag=build-${BUILD_NUMBER} -n helm-lab"
+    One line replaces entire image-loader + kubectl set image dance.
+
+_helpers.tpl explained:
+  - Defines reusable Go template functions.
+  - flask-cicd-app.fullname: generates resource names.
+    Since fullnameOverride=flask-cicd-helm2, all resources get that prefix.
+  - flask-cicd-app.labels: generates standard Helm labels
+    (chart version, app name, instance, managed-by).
+  - flask-cicd-app.serviceAccountName: returns SA name.
+    Since create=false, returns "default".
+
+Interview cheat sheet for Helm:
+
+  Q: What is Helm?
+  A: "Helm is a package manager for Kubernetes. It packages K8s manifests
+     into reusable charts with templated values."
+
+  Q: What is a Helm Chart?
+  A: "A chart is a collection of files: Chart.yaml (metadata),
+     values.yaml (config), and templates/ (K8s YAMLs with Go template
+     syntax). It's a blueprint for deploying an application."
+
+  Q: What is a Helm Release?
+  A: "A release is a running instance of a chart. Same chart can be
+     installed multiple times with different release names. Each release
+     tracks its own revision history."
+
+  Q: helm install vs helm upgrade vs helm upgrade --install?
+  A: "Install creates new release, upgrade updates existing one,
+     upgrade --install does both. In CI/CD we always use upgrade --install
+     for idempotency."
+
+  Q: How do you rollback?
+  A: "helm rollback <release> <revision>. Helm keeps revision history.
+     View with helm history <release>."
+
+  Q: What is values.yaml?
+  A: "Single source of truth for all configurable parameters. Templates
+     reference values using {{ .Values.xxx }}. Override at install time
+     with --set or -f flags."
+
+  Q: How does Helm track resource ownership?
+  A: "Helm adds labels (app.kubernetes.io/managed-by: Helm) and
+     annotations (meta.helm.sh/release-name) to every resource.
+     This is how it knows which resources belong to which release."
+
+Final state after Stage 7:
+  - Old deployment (kubectl apply) still running in default namespace.
+  - New Helm deployment running in helm-lab namespace.
+  - 2 running pods, NodePort service, Bound PVC in helm-lab.
+  - Same Flask app, same config, but now managed by Helm.
+
+================================================================================
+NEXT STEP PLAN (DO NOT EXECUTE UNTIL APPROVED)
+================================================================================
+
+Planned order:
+  Stage 8: MariaDB container addition via Helm (multi-service architecture).
+  Stage 9: Jenkins integration with Helm deployments.
+  Stage 10: Container registry (DockerHub/Harbor) integration.
+
+
+
+  ) Recreate namespace
+kubectl create namespace helm-lab
+Creates the namespace where we deployed the Helm release.
+
+2) Make sure app image is available in Minikube
+minikube image load flask-cicd-app:latest
+Loads your Flask image into the Minikube node.
+Important because your chart uses imagePullPolicy: Never.
+
+3) Preview rendered Helm YAML
+helm template flask-cicd-helm2 .\helm\flask-cicd-app -n helm-lab -f .\helm\flask-cicd-app\values.yaml
+Shows what Helm will create, without deploying.
+
+4) Install/restore the Helm release
+helm upgrade --install flask-cicd-helm2 .\helm\flask-cicd-app -n helm-lab -f .\helm\flask-cicd-app\values.yaml
+This is the main command.
+If release does not exist, it installs. If it exists, it upgrades.
+
+5) Verify resources
+kubectl get deploy,rs,pods,svc,pvc -n helm-lab
+helm list -n helm-lab
+Checks Deployment, Pods, Service, PVC, and Helm release status.
+
+6) Open app
+First get service name:
+
+kubectl get svc -n helm-lab
+Then open it:
+
+minikube service <service-name> -n helm-lab --url
+If you want, next I’ll give the MariaDB Helm commands in the sa
+
+================================================================================
+STAGE 8 - MARIADB CONNECTIVITY, DEBUGGING, AND MANUAL DB ACCESS
+================================================================================
+
+Stage 8 goal:
+  Connect the Flask app to a separate MariaDB workload running in Kubernetes,
+  verify that app-to-DB networking works, and understand both application-level
+  and manual DB access methods.
+
+Why we added MariaDB as a separate workload:
+  - Flask app is stateless and can scale horizontally.
+  - Database is stateful and needs persistent storage.
+  - In real projects, app and DB run as separate services/pods.
+  - Kubernetes service discovery lets Flask reach MariaDB by service name.
+
+High-level architecture after Stage 8:
+  Browser/local curl
+      ->
+  kubectl port-forward or Service
+      ->
+  Flask Service
+      ->
+  Flask Pod
+      ->
+  MariaDB Service (ClusterIP)
+      ->
+  MariaDB Pod (StatefulSet)
+      ->
+  PersistentVolumeClaim
+
+Important difference between health check and DB check:
+  /health
+    - Only proves the Flask app process is running and responding.
+    - Good for liveness/readiness probes.
+    - Does NOT prove DB connectivity.
+
+  /db-check
+    - Proves Flask can open a DB connection to MariaDB.
+    - Proves service name resolution works (DB_HOST=mariadb-lab).
+    - Proves DB credentials/env vars reached the container.
+    - Proves SQL query execution works.
+
+Meaning of successful verification:
+  If /health works:
+    Application is alive.
+
+  If /db-check works:
+    Application + database integration is working end to end.
+
+Application code added for DB connectivity:
+  app.py now:
+    - imports mysql.connector
+    - reads DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD from env vars
+    - exposes /db-check route
+    - runs SELECT 1 and returns JSON response
+
+Helm integration for DB connectivity:
+  values.yaml contains env vars:
+    DB_HOST=mariadb-lab
+    DB_PORT=3306
+    DB_NAME=appdb
+    DB_USER=appuser
+    DB_PASSWORD=app1234
+
+  deployment.yaml injects them into the container using:
+    {{- with .Values.env }}
+    env:
+      {{- toYaml . | nindent 12 }}
+    {{- end }}
+
+Why DB_HOST is mariadb-lab:
+  - mariadb-lab is the Kubernetes Service name.
+  - Inside the same namespace, pods can connect to service name directly.
+  - So Flask does not need hardcoded Pod IPs.
+  - This is the normal Kubernetes networking model.
+
+MariaDB service explanation:
+  mariadb-lab
+    - ClusterIP service
+    - Used by other pods inside the cluster to access MariaDB on port 3306
+
+  mariadb-lab-headless
+    - Headless service
+    - Used by StatefulSet for stable network identity
+    - More relevant when scaling stateful workloads or doing replication
+
+Commands used to verify Stage 8:
+  Check pods:
+    kubectl get pods -n helm-lab
+
+  Check services:
+    kubectl get svc -n helm-lab
+
+  Check PVCs:
+    kubectl get pvc -n helm-lab
+
+  Check Helm release:
+    helm list -n helm-lab
+
+  Check MariaDB pod details:
+    kubectl describe pod mariadb-lab-0 -n helm-lab
+
+Main issues faced during Stage 8:
+
+1) Docker Desktop engine was down
+  Symptom:
+    docker version failed with:
+      open //./pipe/dockerDesktopLinuxEngine: The system cannot find the file specified
+
+  Meaning:
+    Docker client was installed, but Docker Desktop Linux engine/backend was not
+    actually up, so Minikube using Docker driver could not start.
+
+  Fix:
+    - Kill Docker Desktop processes
+    - Start Docker Desktop again
+    - Switch context back to desktop-linux
+    - Wait until docker version shows Server section
+
+2) Minikube could not connect to Docker
+  Symptom:
+    minikube start --driver=docker failed
+
+  Meaning:
+    Minikube with Docker driver depends on Docker engine being healthy.
+
+  Fix:
+    Start Docker Desktop first, then rerun:
+      minikube start --driver=docker
+
+3) kubectl could not reach the API server
+  Symptom:
+    kubectl get nodes -> connection refused on 127.0.0.1:<port>
+
+  Meaning:
+    Minikube profile existed, but cluster/API server was not fully up yet.
+
+  Fix:
+    Restart Minikube cleanly and wait until:
+      kubectl get nodes
+    shows minikube in Ready state.
+
+4) MariaDB restarts and probe tuning
+  Symptom:
+    MariaDB pod kept restarting because liveness/readiness exec probe timed out.
+
+  Root cause:
+    DB startup was slower than default probe timing in local/minikube setup.
+
+  Fix used:
+    Increase probe timings in Helm install/upgrade:
+      --set primary.livenessProbe.timeoutSeconds=5
+      --set primary.readinessProbe.timeoutSeconds=5
+      --set primary.livenessProbe.initialDelaySeconds=180
+      --set primary.readinessProbe.initialDelaySeconds=60
+
+  Learning:
+    Probes should match real startup behavior. Too aggressive probes can kill a
+    healthy but still-initializing database.
+
+5) /db-check returned 404
+  Symptom:
+    /health worked, but /db-check returned 404 Not Found
+
+  Meaning:
+    Running pods were still using old Flask image that did not contain the new
+    route yet.
+
+  Fix idea:
+    Rebuild image, make it available to Minikube, then restart deployment.
+
+6) Image loading/build confusion with imagePullPolicy: Never
+  Important concept:
+    imagePullPolicy: Never means Kubernetes will not pull from a registry.
+    It assumes the image already exists on the node.
+
+  Therefore:
+    If app code changes, it is NOT enough to edit source files locally.
+    You must rebuild the image and make that image available inside Minikube.
+
+  Valid approaches:
+    - minikube image load flask-cicd-app:latest
+    - minikube image build -t flask-cicd-app:latest .
+
+7) minikube image load failed with cache error
+  Symptom:
+    Failed to load image ... unexpected EOF
+
+  Meaning:
+    Minikube image cache was corrupted or inconsistent.
+
+  Better workaround:
+    Build directly inside Minikube:
+      minikube image build -t flask-cicd-app:latest .
+
+8) Flask pod crashed after restart
+  Symptom:
+    New Flask pod went into CrashLoopBackOff
+
+  Error found in pod logs:
+    ModuleNotFoundError: No module named 'mysql'
+
+  Root cause:
+    requirements.txt in actual build context did not contain
+    mysql-connector-python at that moment.
+
+  Fix:
+    Add to requirements.txt:
+      mysql-connector-python
+
+    Then rebuild image:
+      minikube image build -t flask-cicd-app:latest .
+
+    Then restart deployment:
+      kubectl rollout restart deployment/flask-cicd-helm2 -n helm-lab
+
+9) Final successful result
+  Flask deployment rolled out successfully.
+  MariaDB pod became Ready.
+  DB check succeeded.
+
+  Verified responses:
+    curl.exe http://127.0.0.1:5050/health
+      {"status":"healthy"}
+
+    curl.exe http://127.0.0.1:5050/db-check
+      {"database":"connected","result":1}
+
+Commands used in the final verification flow:
+  Start local access to Flask service:
+    kubectl port-forward -n helm-lab service/flask-cicd-helm2 5050:5000
+
+  Test health:
+    curl.exe http://127.0.0.1:5050/health
+
+  Test DB connectivity through Flask:
+    curl.exe http://127.0.0.1:5050/db-check
+
+Manual DB access vs app DB access:
+  App DB access:
+    Flask automatically connects using env vars.
+    This is application-level connectivity.
+
+  Manual DB access:
+    We log in ourselves using a DB client.
+    This is useful for troubleshooting, inspecting tables, and proving direct
+    access to the database.
+
+Three ways to access MariaDB manually:
+
+1) From inside the MariaDB pod
+  This is the most direct way.
+
+  Enter the pod:
+    kubectl exec -it -n helm-lab mariadb-lab-0 -- bash
+
+  Login as application user:
+    mariadb -u appuser -p appdb
+
+  Or login as root:
+    mariadb -u root -p
+
+  Then run:
+    SHOW DATABASES;
+    USE appdb;
+    SHOW TABLES;
+    SELECT 1;
+
+2) From local machine using port-forward
+  Expose DB locally:
+    kubectl port-forward -n helm-lab service/mariadb-lab 3307:3306
+
+  Connect from local client:
+    mariadb -h 127.0.0.1 -P 3307 -u appuser -p appdb
+
+  Good for:
+    - running SQL from host machine
+    - using DB GUI/client tools
+
+3) From inside the Flask pod
+  Important:
+    Our current Flask image contains Python connector library, but not the
+    mariadb/mysql CLI client binary.
+
+  So currently, from Flask pod we can prove DB access using Python:
+    kubectl exec -it -n helm-lab deploy/flask-cicd-helm2 -- sh
+
+    python -c "import mysql.connector; c=mysql.connector.connect(host='mariadb-lab',port=3306,database='appdb',user='appuser',password='app1234'); print('connected')"
+
+  This is actually closer to real application behavior.
+
+How to get mysql/mariadb CLI inside Flask pod (future improvement):
+  If we want interactive SQL from inside Flask pod, we must add a DB client to
+  the Flask image.
+
+  Since our image is based on python:3.12-slim, typical Dockerfile addition is:
+    RUN apt-get update && apt-get install -y default-mysql-client && rm -rf /var/lib/apt/lists/*
+
+  After rebuilding and redeploying, inside Flask pod we can run:
+    kubectl exec -it -n helm-lab deploy/flask-cicd-helm2 -- sh
+    mariadb -h mariadb-lab -P 3306 -u appuser -p appdb
+
+About ".mysql" or client config inside the pod:
+  In Linux, the usual file is ~/.my.cnf, not ".mysql".
+  It can store default client connection settings for convenience.
+
+  Example ~/.my.cnf:
+    [client]
+    host=mariadb-lab
+    port=3306
+    user=appuser
+    password=app1234
+    database=appdb
+
+  Then the CLI can be used without repeating all flags:
+    mariadb
+
+  Important interview note:
+    Storing plain password in ~/.my.cnf is convenient for lab/testing, but in
+    real projects we should prefer Kubernetes Secrets or mounted secret files.
+
+Best interview explanation for Stage 8:
+  "I separated the application and database into different Kubernetes workloads.
+   Flask used environment variables to connect to MariaDB through the ClusterIP
+   service name. I validated the application itself with /health and validated
+   real DB integration with /db-check. During troubleshooting I also used
+   kubectl exec, pod logs, describe, and port-forwarding to verify direct DB
+   access and isolate image, probe, and connectivity issues."
+
+Green flag to move to next stage:
+  - minikube node is Ready
+  - Flask pods are Running/Ready
+  - MariaDB pod is Running/Ready
+  - /health returns healthy
+  - /db-check returns connected
+  - We understand manual DB access separately from app-level access
+
+Recommended next stage after Stage 8:
+  Stage 9 - Jenkins + Helm integration
+    Goal:
+      Jenkins should build image and run helm upgrade --install so CD flow
+      becomes automated and repeatable.
+
+================================================================================
+                    STAGE 9 - JENKINS + HELM INTEGRATION
+================================================================================
+
+Goal:
+  Replace the old kubectl-based deploy in Jenkins with Helm.
+  Jenkins pipeline builds the image, then runs helm upgrade --install
+  to deploy to Kubernetes using the Helm chart.
+
+What changed:
+  - Jenkinsfile (main branch):
+      The old "Deploy to K8s" stage (kubectl set image) was replaced with
+      a "Deploy with Helm" stage:
+        helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app \
+          -n helm-lab \
+          --set image.tag=build-${BUILD_NUMBER} \
+          --wait --timeout 120s
+      This tells Helm to install (or upgrade if exists) the release named
+      flask-cicd-helm2 using the chart at helm/flask-cicd-app, in the
+      helm-lab namespace.
+
+  - Multibranch Pipeline (dev branch):
+      The dev branch keeps the OLD kubectl-based deploy style for learning.
+      It uses kubectl apply for manifests, docker save/load for image transfer,
+      and kubectl set image for rolling updates. This demonstrates how teams
+      can have different deploy strategies per branch.
+
+  - Helm was manually installed inside the Jenkins container:
+      curl -kLO https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz
+      tar -zxvf helm-v3.14.4-linux-amd64.tar.gz
+      mv linux-amd64/helm /usr/local/bin/helm
+    Helm is NOT on the persistent volume, so if the Jenkins container is
+    recreated, Helm must be reinstalled.
+
+Key concepts:
+  helm upgrade --install:
+    - If the release doesn't exist → installs it (like helm install)
+    - If the release exists → upgrades it (like helm upgrade)
+    - This is idempotent — safe to run multiple times
+
+  --set flags:
+    Override values.yaml at deploy time without editing the file.
+    Example: --set image.tag=build-5 overrides image.tag in values.yaml
+
+  --wait:
+    Helm waits until all pods are Running/Ready before declaring success.
+    Without this, Helm would exit immediately even if pods are crashing.
+
+  --timeout 120s:
+    If pods aren't ready within 120 seconds, Helm rolls back and fails.
+
+Interview points:
+  Q: Why use Helm in a Jenkins pipeline instead of kubectl?
+  A: Helm manages releases as a unit — you can rollback, version, and template.
+     kubectl apply is imperative and doesn't track release history.
+
+  Q: What does helm upgrade --install do?
+  A: It's idempotent. Installs if new, upgrades if exists. Safe for CI/CD
+     because you don't need to check if the release exists first.
+
+Green flag for Stage 9:
+  - Jenkins pipeline runs helm upgrade --install successfully
+  - Pods come up healthy in helm-lab namespace
+  - dev branch still works with old kubectl apply style
+
+================================================================================
+                    STAGE 10 - DOCKER HUB REGISTRY FLOW
+================================================================================
+
+Goal:
+  Replace the local "minikube image load" approach with a real container
+  registry (Docker Hub). Jenkins pushes the image to Docker Hub, and
+  Kubernetes pulls it from Docker Hub during deployment.
+
+  Flow: Code Push → Jenkins Build → Docker Push to Hub → Helm Deploy → K8s Pulls from Hub
+
+Why this matters:
+  In real-world CI/CD, you never manually load images into the cluster.
+  Images are pushed to a registry (Docker Hub, ECR, GCR, ACR) and
+  Kubernetes pulls them. This is how every production pipeline works.
+
+What changed in Jenkinsfile (main branch):
+
+  1. New environment variable:
+       REGISTRY_REPO = 'adityaverma268/flask-cicd-app'
+     This is the Docker Hub repository path (username/repo-name).
+
+  2. Docker Build stage updated:
+       docker build -t adityaverma268/flask-cicd-app:build-${BUILD_NUMBER} .
+       docker build -t adityaverma268/flask-cicd-app:latest .
+     Images are now tagged with the full registry path so Docker knows
+     where to push them.
+
+  3. New "Docker Push" stage added:
+       withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', ...)]) {
+           sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
+           sh "docker push ${REGISTRY_REPO}:${IMAGE_TAG}"
+           sh "docker push ${REGISTRY_REPO}:latest"
+           sh 'docker logout'
+       }
+
+     Breakdown:
+       - withCredentials: Injects Jenkins-stored credentials as env vars
+         (DOCKER_USER and DOCKER_PASS). Never hardcode passwords in pipelines.
+       - docker login --password-stdin: Logs in securely (password via stdin,
+         not visible in process list or logs).
+       - docker push: Uploads the image to Docker Hub.
+       - docker logout: Cleans up auth token from the container.
+
+  4. Deploy with Helm stage updated:
+       --set image.repository=adityaverma268/flask-cicd-app
+       --set image.pullPolicy=Always
+       --set imagePullSecrets[0].name=dockerhub-pull
+
+     - image.repository: Now points to Docker Hub, not local.
+     - image.pullPolicy=Always: Forces Kubernetes to pull from registry
+       every time (instead of using cached local image).
+     - imagePullSecrets[0].name=dockerhub-pull: Tells the pod to use
+       a Kubernetes secret for Docker Hub authentication when pulling.
+
+  5. "Transfer Image to Minikube" stage REMOVED:
+     No more docker save/load/image-loader pod — images come from the registry.
+
+Jenkins Credentials Setup (dockerhub-creds):
+  1. Go to Jenkins → Manage Jenkins → Credentials → Global
+  2. Add Credentials → Kind: Username with password
+  3. ID: dockerhub-creds
+  4. Username: your Docker Hub username
+  5. Password: your Docker Hub Personal Access Token (PAT)
+     (NOT your Docker Hub login password — use a PAT with read/write scope)
+
+Docker Hub PAT (Personal Access Token):
+  - Created at: hub.docker.com → Account Settings → Security → Personal access tokens
+  - Scopes: repo:read,write (for push) or repo:read (for pull only)
+  - You CANNOT retrieve a PAT after creation — save it when generated
+  - If lost, create a new one and update Jenkins credentials
+
+Kubernetes imagePullSecrets — why needed:
+  Problem:
+    Jenkins (inside my-jenkins container) has Docker Hub credentials.
+    But Kubernetes (inside minikube) does NOT. They are separate systems.
+    When a pod tries to pull an image from Docker Hub, it pulls anonymously.
+    Docker Hub rate-limits anonymous pulls → "toomanyrequests" error.
+
+  Solution:
+    Create a Kubernetes secret that stores Docker Hub credentials:
+      kubectl create secret docker-registry dockerhub-pull \
+        -n helm-lab \
+        --docker-server=https://index.docker.io/v1/ \
+        --docker-username=adityaverma268 \
+        --docker-password=<YOUR_PAT>
+
+    Then tell the pod to use it via imagePullSecrets in the deployment spec.
+    We pass this through Helm: --set imagePullSecrets[0].name=dockerhub-pull
+
+  Important:
+    - This secret lives inside the Kubernetes cluster
+    - If minikube is DELETED and recreated, the secret is gone → recreate it
+    - If minikube is just RESTARTED, the secret survives
+
+Infrastructure recovery notes (for when things break):
+  Docker Desktop crashing during minikube start:
+    Fix: Use --base-image flag to skip the download that crashes Docker:
+      minikube start --driver=docker --base-image="gcr.io/k8s-minikube/kicbase:v0.0.47"
+
+  Jenkins container recreated (kubectl/helm missing):
+    kubectl and helm are installed in the container filesystem, NOT the
+    persistent volume. If the container is removed and recreated:
+      1. Reinstall kubectl:
+         docker exec --user root my-jenkins sh -c \
+           'curl -kLO "https://dl.k8s.io/release/v1.33.1/bin/linux/amd64/kubectl" && \
+            chmod +x kubectl && mv kubectl /usr/local/bin/ && \
+            ln -sf /usr/local/bin/kubectl /usr/bin/kubectl'
+      2. Reinstall helm:
+         docker exec --user root my-jenkins sh -c \
+           'curl -kLO https://get.helm.sh/helm-v3.14.4-linux-amd64.tar.gz && \
+            tar -zxf helm-v3.14.4-linux-amd64.tar.gz && \
+            mv linux-amd64/helm /usr/local/bin/helm && \
+            ln -sf /usr/local/bin/helm /usr/bin/helm'
+      3. Copy fresh minikube certs:
+         docker cp ~/.minikube/ca.crt my-jenkins:/var/jenkins_home/.minikube/ca.crt
+         docker cp ~/.minikube/profiles/minikube/client.crt my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.crt
+         docker cp ~/.minikube/profiles/minikube/client.key my-jenkins:/var/jenkins_home/.minikube/profiles/minikube/client.key
+
+  Symlink kubectl/helm to /usr/bin:
+    Jenkins' durable-task plugin sometimes uses a restricted PATH that
+    doesn't include /usr/local/bin. Symlinking ensures the binaries are
+    always found: ln -sf /usr/local/bin/kubectl /usr/bin/kubectl
+
+Interview points:
+  Q: How does your CI/CD pipeline push images to a registry?
+  A: Jenkins uses withCredentials to inject Docker Hub credentials securely,
+     logs in with docker login --password-stdin, pushes both a build-tagged
+     and latest-tagged image, then logs out. Credentials are stored in
+     Jenkins credential store, never in the Jenkinsfile.
+
+  Q: Why do you need imagePullSecrets in Kubernetes?
+  A: Kubernetes nodes don't have Docker Hub credentials. Without
+     imagePullSecrets, pulls are anonymous and hit rate limits.
+     The secret stores registry auth so pods can pull authenticated.
+
+  Q: What happens if you forget imagePullSecrets?
+  A: Pods will show ImagePullBackOff or ErrImagePull. The events will
+     show "toomanyrequests" or "unauthorized" depending on whether
+     the repo is public (rate-limited) or private (denied).
+
+  Q: Where should secrets like Docker Hub PATs be stored?
+  A: In a secrets manager — Jenkins credential store for CI, Kubernetes
+     Secrets for runtime. Never in code, Jenkinsfile, or values.yaml.
+     In production, teams use HashiCorp Vault or cloud-native solutions
+     (AWS Secrets Manager, Azure Key Vault).
+
+Green flag for Stage 10:
+  - Jenkins pushes image to Docker Hub (visible at hub.docker.com)
+  - Helm deploys with image.pullPolicy=Always
+  - Pods pull from Docker Hub using imagePullSecrets
+  - No more local image loading (docker save/load is gone from main)
+  - dev branch still uses old kubectl-based deploy style
+
+==========================================================================
+STAGE 11 — Kubernetes Secrets (Creation, Consumption, CI/CD Integration)
+==========================================================================
+
+What are Kubernetes Secrets?
+  - Kubernetes objects that store sensitive data (passwords, tokens, keys)
+  - Stored in etcd (the cluster's key-value store)
+  - Base64-encoded by default — NOT encrypted (base64 is encoding, not security)
+  - To encrypt at rest, enable EncryptionConfiguration on the API server
+  - Accessed by pods via env vars or volume mounts
+
+Secret types we used:
+  1. Opaque (generic) — for arbitrary key-value data (DB credentials)
+  2. kubernetes.io/dockerconfigjson — for container registry auth (imagePullSecrets from Stage 10)
+
+ConfigMap vs Secret (interview favourite):
+  ┌──────────────────┬──────────────────────┬──────────────────────┐
+  │                  │     ConfigMap        │     Secret           │
+  ├──────────────────┼──────────────────────┼──────────────────────┤
+  │ Purpose          │ Non-sensitive config  │ Sensitive data       │
+  │ Stored as        │ Plain text           │ Base64-encoded       │
+  │ Example          │ DB_HOST, DB_PORT     │ DB_PASSWORD, tokens  │
+  │ Mounted as       │ Env var or file      │ Env var or file      │
+  │ RBAC             │ Same                 │ Can be restricted    │
+  │ Encryption       │ No                   │ Optional at-rest     │
+  └──────────────────┴──────────────────────┴──────────────────────┘
+
+-----------------------------------------------
+THREE APPROACHES WE IMPLEMENTED
+-----------------------------------------------
+
+Approach 1 — Manual kubectl create (dev branch style):
+  Created secret from a file:
+    1. Created db-creds.txt with key=value pairs:
+       DB_HOST=mariadb-lab
+       DB_PORT=3306
+       DB_NAME=appdb
+       DB_USER=appuser
+       DB_PASSWORD=app1234
+
+    2. Command:
+       kubectl create secret generic db-file-secret -n helm-lab \
+         --from-env-file=flask-cicd-app/db-creds.txt
+
+    3. Verify:
+       kubectl get secret db-file-secret -n helm-lab -o yaml
+       → Shows base64-encoded values under "data:" field
+
+  On dev branch we also created a static k8s/db-secret.yaml manifest:
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: db-secret-manual
+    type: Opaque
+    stringData:        ← plain text, K8s auto-encodes to base64
+      DB_HOST: mariadb-lab
+      DB_PASSWORD: app1234
+      ...
+
+  Jenkinsfile (dev) applies it: kubectl apply -f k8s/db-secret.yaml
+
+Approach 2 — Helm-managed Secret (main branch):
+  Created templates/db-secret.yaml using Helm templating:
+    stringData:
+      DB_HOST: {{ .Values.db.host }}
+      DB_PASSWORD: {{ .Values.db.password }}
+
+  values.yaml has a "db:" section with defaults:
+    db:
+      host: mariadb-lab
+      password: app1234
+
+  Helm renders the template → creates the Secret in the cluster.
+  Advantage: Secret lifecycle tied to the Helm release (upgrade/rollback).
+
+Approach 3 — Jenkins injects credentials at deploy time (CI/CD integration):
+  Jenkinsfile (main) uses withCredentials:
+    withCredentials([usernamePassword(
+        credentialsId: 'db-creds',
+        usernameVariable: 'DB_USER',
+        passwordVariable: 'DB_PASS')]) {
+      sh "helm upgrade --install ... --set db.user=$DB_USER --set db.password=$DB_PASS ..."
+    }
+
+  Flow: Jenkins credential store → pipeline env vars → Helm --set → values override → Secret template
+  Result: Real credentials never stored in Git. Only dummy defaults in values.yaml.
+
+-----------------------------------------------
+TWO WAYS TO CONSUME SECRETS IN PODS
+-----------------------------------------------
+
+1. As Environment Variable (secretKeyRef):
+   In values.yaml:
+     env:
+       - name: DB_PASSWORD
+         valueFrom:
+           secretKeyRef:
+             name: db-file-secret
+             key: DB_PASSWORD
+
+   Verification:
+     kubectl exec <pod> -n helm-lab -- printenv DB_PASSWORD
+     → app1234
+
+   Use when: App reads config from env vars (12-factor app pattern, most common)
+
+2. As Volume Mount (projected as files):
+   In values.yaml:
+     volumes:
+       - name: db-secrets
+         secret:
+           secretName: db-file-secret
+     volumeMounts:
+       - name: db-secrets
+         mountPath: /etc/db-secrets
+         readOnly: true
+
+   Each key becomes a file: /etc/db-secrets/DB_PASSWORD contains "app1234"
+
+   Verification:
+     kubectl exec <pod> -n helm-lab -- ls /etc/db-secrets/
+     → DB_HOST  DB_NAME  DB_PASSWORD  DB_PORT  DB_USER
+     kubectl exec <pod> -n helm-lab -- cat /etc/db-secrets/DB_PASSWORD
+     → app1234
+
+   Use when:
+     - App expects config files (e.g. TLS certs, .my.cnf, SSH keys)
+     - You need auto-rotation (volume mounts update when secret changes, env vars don't)
+
+   Key difference: Volume-mounted secrets auto-update when the Secret object changes.
+   Env var secrets require a pod restart to pick up new values.
+
+-----------------------------------------------
+MAIN vs DEV BRANCH COMPARISON (Stage 11)
+-----------------------------------------------
+
+  main branch (Helm + Jenkins creds):
+    ┌─ Jenkinsfile ──────────────────────────────────────────────────┐
+    │ withCredentials(['db-creds']) {                                │
+    │   helm upgrade --set db.user=$DB_USER --set db.password=$DB_PASS │
+    │ }                                                              │
+    ├─ Helm templates/db-secret.yaml ────────────────────────────────┤
+    │ stringData:                                                    │
+    │   DB_PASSWORD: {{ .Values.db.password }}    ← from --set       │
+    ├─ values.yaml ──────────────────────────────────────────────────┤
+    │ env:                                                           │
+    │   DB_PASSWORD: secretKeyRef → db-file-secret                   │
+    │ volumeMounts: /etc/db-secrets (readOnly)                       │
+    └────────────────────────────────────────────────────────────────┘
+
+  dev branch (manual kubectl apply, no Jenkins creds):
+    ┌─ Jenkinsfile ──────────────────────────────────────────────────┐
+    │ kubectl apply -f k8s/db-secret.yaml                           │
+    │ kubectl apply -f k8s/deployment.yaml                          │
+    ├─ k8s/db-secret.yaml ──────────────────────────────────────────┤
+    │ stringData:                                                    │
+    │   DB_PASSWORD: app1234    ← hardcoded (not ideal for prod)     │
+    ├─ k8s/deployment.yaml ──────────────────────────────────────────┤
+    │ env:                                                           │
+    │   DB_PASSWORD: secretKeyRef → db-secret-manual                 │
+    │ volumeMounts: /etc/db-secrets (readOnly)                       │
+    └────────────────────────────────────────────────────────────────┘
+
+-----------------------------------------------
+WITHCREDENTIALS SYNTAX EXPLAINED
+-----------------------------------------------
+
+  withCredentials([usernamePassword(
+      credentialsId: 'db-creds',        ← ID from Jenkins > Manage Credentials
+      usernameVariable: 'DB_USER',      ← mapped to $DB_USER in shell
+      passwordVariable: 'DB_PASS')]) {  ← mapped to $DB_PASS, masked in logs
+    sh "helm upgrade ... --set db.user=$DB_USER --set db.password=$DB_PASS"
+  }
+
+  - credentialsId: Must match the ID you gave when adding credentials in Jenkins UI
+  - usernameVariable/passwordVariable: Temp env vars, only exist inside the {} block
+  - Jenkins auto-masks these values in console output (shows ****)
+  - Supports other types too: string(), file(), sshUserPrivateKey()
+
+-----------------------------------------------
+PRODUCTION BEST PRACTICES (interview gold)
+-----------------------------------------------
+
+  1. Never commit real secrets to Git — use dummy/default values in values.yaml
+  2. Jenkins credential store for CI-time secrets → passed via --set at deploy time
+  3. For production clusters, use external secrets managers:
+     - HashiCorp Vault + Vault Agent Injector
+     - Sealed Secrets (Bitnami) — encrypts secrets so they're safe in Git
+     - External Secrets Operator — syncs from AWS Secrets Manager / Azure Key Vault
+  4. Enable encryption at rest for etcd (EncryptionConfiguration)
+  5. Use RBAC to restrict who can read secrets:
+     kubectl create role secret-reader --verb=get --resource=secrets
+  6. Rotate secrets regularly — volume mounts auto-update, env vars need pod restart
+
+-----------------------------------------------
+INTERVIEW Q&A — STAGE 11
+-----------------------------------------------
+
+  Q: How do you manage secrets in Kubernetes?
+  A: We use Kubernetes Secrets with stringData for creation. Secrets are consumed
+     via secretKeyRef (env vars) or volume mounts (files). For CI/CD, Jenkins stores
+     credentials in its credential store, injects them via withCredentials, and passes
+     to Helm --set flags so real values never touch Git.
+
+  Q: What's the difference between secretKeyRef and volume mount for secrets?
+  A: secretKeyRef injects a single key as an env var — simple but requires pod
+     restart on secret change. Volume mount projects all keys as files under a
+     directory — supports auto-rotation and is better for certs/config files.
+
+  Q: stringData vs data in a Secret manifest?
+  A: stringData accepts plain text, Kubernetes auto-encodes to base64.
+     data requires you to pre-encode values. stringData is easier to write;
+     both produce the same Secret object.
+
+  Q: How do you handle secrets in CI/CD?
+  A: Jenkins stores credentials in its credential store, accessed via
+     withCredentials in the pipeline. At deploy time, credentials are passed
+     as Helm --set overrides, so the Secret template uses real values while
+     Git only has dummy defaults. Never commit secrets to Git.
+
+  Q: What if someone does kubectl get secret -o yaml?
+  A: They see base64-encoded values — which can be trivially decoded.
+     That's why RBAC matters: restrict secret read access. For true security,
+     enable etcd encryption at rest and use external secrets managers.
+
+  Q: How would you rotate a database password in production?
+  A: Update the Secret object (kubectl edit or through the secrets manager).
+     Volume-mounted secrets auto-update in ~1 minute. Env-var-based secrets
+     require a pod restart (kubectl rollout restart deployment/xxx).
+
+  Q: Why not just use ConfigMaps for everything?
+  A: ConfigMaps are plain text and visible to anyone with read access.
+     Secrets get base64 encoding, optional encryption at rest, and separate
+     RBAC controls. Use ConfigMaps for non-sensitive config (ports, hostnames)
+     and Secrets for passwords, tokens, and keys.
+
+  Q: What is Sealed Secrets?
+  A: A Bitnami project. You encrypt secrets locally with a public key
+     (kubeseal CLI) → produces a SealedSecret resource safe to commit to Git.
+     The controller in-cluster decrypts it using its private key and creates
+     a regular Kubernetes Secret. Solves the "secrets in Git" problem.
+
+Green flag for Stage 11:
+  - Secret created via Helm template on main, kubectl apply on dev
+  - DB_PASSWORD consumed via secretKeyRef (env var) ✓
+  - All secret keys projected as files at /etc/db-secrets/ (volume mount) ✓
+  - Jenkins withCredentials injects real DB creds at deploy time on main ✓
+  - dev branch uses static manifest (manual approach, no Jenkins creds) ✓
+  - Both consumption methods verified inside pods with kubectl exec
+
+================================================================================
+STAGE 12: PROMETHEUS & GRAFANA MONITORING
+================================================================================
+
+WHAT THIS STAGE IS ABOUT (One Line):
+  We added code to our Flask app that counts every request, then installed
+  tools that collect those counts and draw graphs from them.
+
+--------------------------------------------------------------------------------
+1. WHY MONITORING?
+--------------------------------------------------------------------------------
+  - Without monitoring, debugging production issues is guesswork
+  - You can't SSH into every server to check logs manually at scale
+  - Monitoring gives real-time visibility: request rate, latency, error rates
+  - You open a dashboard and immediately see what's wrong and when it started
+
+  Interview: "Monitoring gives us visibility into application health and
+  performance in real-time. Without it, debugging production issues is guesswork."
+
+--------------------------------------------------------------------------------
+2. THE THREE PLAYERS (Restaurant Analogy)
+--------------------------------------------------------------------------------
+  Flask App (app.py)  = Kitchen that keeps a tally board of orders
+  Prometheus          = Manager who reads the tally board every 15 seconds
+  Grafana             = TV screen that shows pretty charts from the manager's notes
+
+  Flow: Flask counts requests → Prometheus collects every 15s → Grafana draws graphs
+
+  Key concept: Prometheus uses a PULL model. It visits your app's /metrics endpoint.
+  Your app does NOT push data to Prometheus. This is different from push-based
+  systems like Datadog agent.
+
+--------------------------------------------------------------------------------
+3. WHAT WE CHANGED IN CODE
+--------------------------------------------------------------------------------
+
+  FILE 1: app.py — Added 4 things:
+
+    a) Two metric objects (lines 9-18):
+       REQUEST_COUNT = Counter('flask_http_requests_total', ...)
+         → Counts total requests. Labels: method, endpoint, status
+         → Counter ONLY goes up (never decreases)
+       REQUEST_LATENCY = Histogram('flask_http_request_duration_seconds', ...)
+         → Records how long each request takes
+         → Histogram gives you percentiles (p50, p95, p99)
+
+    b) before_request hook (lines 21-23):
+       → Starts a stopwatch before every request
+
+    c) after_request hook (lines 26-39):
+       → Stops the stopwatch
+       → Adds +1 to REQUEST_COUNT for this method/endpoint/status
+       → Records the latency in REQUEST_LATENCY
+       → Skips recording for /metrics itself (avoids infinite loop)
+
+    d) /metrics endpoint (lines 76-78):
+       → Returns all metric data in Prometheus text format
+       → This is what Prometheus visits every 15 seconds
+       → Output looks like:
+         flask_http_requests_total{method="GET",endpoint="/",status="200"} 150
+         flask_http_request_duration_seconds_bucket{endpoint="/",le="0.005"} 148
+
+  FILE 2: requirements.txt — Added prometheus-client library
+
+  Counter vs Histogram:
+    Counter  = "How many?" (only goes up, e.g., total requests)
+    Histogram = "How long?" (distribution of values, gives percentiles)
+    You'd never use a Counter for latency because you need the range, not just total.
+
+--------------------------------------------------------------------------------
+4. SERVICEMONITOR — The Bridge Between App and Prometheus
+--------------------------------------------------------------------------------
+
+  File: helm/flask-cicd-app/templates/servicemonitor.yaml
+
+  In plain English: "Hey Prometheus, there's an app in helm-lab namespace
+  with label flask-cicd-app. Hit its /metrics every 15 seconds."
+
+  Key fields:
+    release: prometheus     → Permission tag. Prometheus only scrapes
+                              ServiceMonitors with this label.
+    namespaceSelector:
+      matchNames: [helm-lab] → Look in helm-lab namespace
+    selector:
+      matchLabels:
+        app.kubernetes.io/name: flask-cicd-app → Find this Service
+    endpoints:
+      port: http, path: /metrics, interval: 15s → Scrape config
+
+  The chain:
+    ServiceMonitor → finds Service "flask-cicd-app" in helm-lab
+    → Service points to Flask pods → Prometheus scrapes /metrics every 15s
+
+  Why not edit Prometheus config directly?
+    ServiceMonitors are Kubernetes-native (declarative YAML, version-controlled,
+    deployed via Helm). Manual config editing doesn't scale and isn't GitOps-friendly.
+
+  What is a CRD (Custom Resource Definition)?
+    ServiceMonitor is NOT a built-in K8s resource. The Prometheus Operator
+    installs it as a CRD. It extends Kubernetes with new resource types.
+
+--------------------------------------------------------------------------------
+5. KUBE-PROMETHEUS-STACK — What Helm Installed
+--------------------------------------------------------------------------------
+
+  Command: helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
+
+  Component               | What it does                              | Essential?
+  ----------------------- | ----------------------------------------- | ----------
+  Prometheus Server       | Scrapes targets, stores time-series data  | YES
+  Grafana                 | Draws graphs, dashboards from Prometheus  | YES
+  Prometheus Operator     | Watches ServiceMonitors, auto-configures  | Nice to have
+  Alertmanager            | Routes alerts to Slack/email/PagerDuty    | Not for now
+  Node Exporter           | Reports CPU/memory/disk of the machine    | Not for now
+  Kube State Metrics      | Reports K8s object states (pods, deploys) | Not for now
+
+  We disabled Alertmanager, Node Exporter, and Kube State Metrics to save
+  Minikube resources. In production, all 6 would be running.
+
+--------------------------------------------------------------------------------
+6. THE FULL FLOW IN 6 STEPS
+--------------------------------------------------------------------------------
+
+  1. User hits GET /health
+  2. Flask app processes the request
+  3. before_request: starts stopwatch (time.time())
+  4. after_request: records count +1 and latency 0.002s
+  5. Every 15s, Prometheus visits GET /metrics and collects all counts
+  6. Grafana queries Prometheus → draws graph
+
+  Architecture:
+  ┌─────────────────── monitoring namespace ───────────────────┐
+  │  Prometheus Operator (watches ServiceMonitors)             │
+  │  Prometheus Server ──scrapes──→ Flask pods /metrics        │
+  │  Grafana ──queries──→ Prometheus (data source)             │
+  └────────────────────────────────────────────────────────────┘
+                    │ ServiceMonitor bridge
+  ┌─────────────────── helm-lab namespace ─────────────────────┐
+  │  flask-cicd-helm2 Service (port 5000)                      │
+  │    → Flask Pod 1 → GET /metrics → prometheus text format   │
+  │    → Flask Pod 2 → GET /metrics → prometheus text format   │
+  │  ServiceMonitor (release: prometheus)                      │
+  └────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+7. GRAFANA DASHBOARD — The 3 PromQL Queries
+--------------------------------------------------------------------------------
+
+  Panel 1: Request Rate
+    Query: rate(flask_http_requests_total[5m])
+    Meaning: "How many requests per second over last 5 minutes?"
+
+  Panel 2: Request Latency (p95)
+    Query: histogram_quantile(0.95, rate(flask_http_request_duration_seconds_bucket[5m]))
+    Meaning: "95% of requests completed within how many seconds?"
+
+  Panel 3: Total Requests by Endpoint
+    Query: sum by (endpoint, status) (flask_http_requests_total)
+    Meaning: "Total count of requests grouped by endpoint and status code"
+
+  What is PromQL?
+    Prometheus Query Language. How you ask questions about your metrics data.
+    rate()               → per-second rate over a time window
+    sum by (label)       → group and aggregate
+    histogram_quantile() → calculate percentiles from histogram data
+
+  Dashboard = the whole page. Panel = one graph/chart inside the dashboard.
+  We created 1 dashboard ("Flask App Monitoring") with 3 panels.
+
+--------------------------------------------------------------------------------
+8. JENKINSFILE CHANGE
+--------------------------------------------------------------------------------
+
+  Changed Helm deploy timeout from 120s to 300s:
+    --wait --timeout 300s
+
+  Why: Minikube under load (Prometheus stack running) needs more time to pull
+  images and start pods. 120s wasn't enough, causing "context deadline exceeded".
+
+--------------------------------------------------------------------------------
+9. FILES CHANGED IN THIS STAGE
+--------------------------------------------------------------------------------
+
+  app.py                  → Added Counter, Histogram, hooks, /metrics endpoint
+  requirements.txt        → Added prometheus-client
+  servicemonitor.yaml     → NEW: tells Prometheus to scrape Flask app
+  Jenkinsfile             → Changed timeout 120s → 300s
+
+--------------------------------------------------------------------------------
+10. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: How do you monitor your applications?
+  A: We use Prometheus and Grafana. The app exposes a /metrics endpoint using
+     the prometheus_client Python library. Prometheus scrapes it every 15 seconds
+     via a ServiceMonitor CRD. Grafana visualizes the data with dashboards
+     showing request rate, latency percentiles, and error rates.
+
+  Q: What metrics do you track?
+  A: Request count by method/endpoint/status (Counter), and request latency
+     (Histogram). Counter tells us throughput and error rates. Histogram gives
+     percentile latency like p95 and p99.
+
+  Q: What's the difference between Counter and Histogram?
+  A: Counter only goes up — it counts total events. Histogram records the
+     distribution of values (like latency) so you can calculate percentiles.
+
+  Q: What is a ServiceMonitor?
+  A: A Kubernetes CRD created by the Prometheus Operator. Instead of manually
+     editing Prometheus config to add scrape targets, you create a ServiceMonitor
+     YAML that says "scrape this service, on this port, at this path." The
+     Operator watches for these and auto-configures Prometheus.
+
+  Q: What's the difference between Prometheus and Grafana?
+  A: Prometheus collects and stores metrics (the database). Grafana is the
+     visualization layer that queries Prometheus and draws dashboards.
+
+  Q: How does Prometheus discover your app?
+  A: Pull-based model. Prometheus pulls data from /metrics. ServiceMonitor
+     tells it where to pull from. Different from push-based systems like
+     Datadog where the app sends data to the collector.
+
+  Q: What is PromQL?
+  A: Prometheus Query Language. Example: rate(flask_http_requests_total[5m])
+     means "per-second rate of requests over last 5 minutes." Supports
+     rate(), sum(), histogram_quantile() for aggregating time-series data.
+
+  Q: What are the three pillars of observability?
+  A: Metrics (Prometheus/Grafana), Logs (EFK stack/Loki), Tracing (Jaeger/
+     OpenTelemetry). We implemented metrics in this stage.
+
+  Q: What would you alert on?
+  A: Error rate > 5% (too many 500s), p95 latency > 2 seconds, pod restart
+     count increasing, and request rate dropping to zero (app might be down).
+
+--------------------------------------------------------------------------------
+11. STAGE 12 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - Flask app /metrics endpoint returns Prometheus text format ✓
+  - prometheus-client added to requirements.txt ✓
+  - ServiceMonitor deployed with release: prometheus label ✓
+  - Prometheus server scraping Flask pods every 15s ✓
+  - Grafana dashboard with 3 panels (rate, latency, total requests) ✓
+  - Traffic generated, graphs show spikes correctly ✓
+  - Jenkins pipeline passes with 300s timeout ✓
