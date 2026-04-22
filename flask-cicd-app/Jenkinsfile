@@ -1,75 +1,100 @@
 pipeline {
-    agent none
-
-    environment {
-        REGISTRY_REPO = 'adityaverma268/flask-cicd-app'
-        IMAGE_TAG     = "build-${BUILD_NUMBER}"
-    }
+    agent any
 
     stages {
-        stage('Checkout') {
-            agent any
+        stage('Create Namespaces') {
             steps {
-                checkout scm
+                sh '''
+                    kubectl create namespace helm-lab   --dry-run=client -o yaml | kubectl apply -f -
+                    kubectl create namespace monitoring --dry-run=client -o yaml | kubectl apply -f -
+                '''
             }
         }
 
-        stage('Install & Test') {
-            agent {
-                docker {
-                    image 'python:3.12-slim'
-                    args '-v pip-cache:/root/.cache/pip --user root'
-                }
-            }
+        stage('Create PVC') {
             steps {
-                dir('flask-cicd-app') {
-                    sh 'pip install -r requirements.txt'
-                    sh 'pytest test_app.py -v'
+                sh '''
+                    cat <<EOFPVC | kubectl apply -f -
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: flask-pvc-helm2
+  namespace: helm-lab
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 100Mi
+EOFPVC
+                '''
+            }
+        }
+
+        stage('Deploy MariaDB') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
+                    sh '''
+                        helm repo add bitnami https://charts.bitnami.com/bitnami || true
+                        helm repo update
+                        helm upgrade --install mariadb-lab bitnami/mariadb \
+                          -n helm-lab \
+                          --set auth.rootPassword=$DB_PASS \
+                          --set auth.database=appdb \
+                          --set auth.username=$DB_USER \
+                          --set auth.password=$DB_PASS \
+                          --set primary.resources.requests.cpu=100m \
+                          --set primary.resources.requests.memory=256Mi \
+                          --set primary.resources.limits.cpu=250m \
+                          --set primary.resources.limits.memory=512Mi \
+                          --wait --timeout 300s
+                    '''
                 }
             }
         }
 
-        stage('Docker Build') {
-            agent any
+        stage('Create DB Secret for App') {
             steps {
-                dir('flask-cicd-app') {
-                    sh "docker build -t ${REGISTRY_REPO}:${IMAGE_TAG} ."
-                    sh "docker build -t ${REGISTRY_REPO}:latest ."
+                withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
+                    sh '''
+                        kubectl create secret generic db-file-secret \
+                          --from-literal=DB_PASSWORD=$DB_PASS \
+                          -n helm-lab --dry-run=client -o yaml | kubectl apply -f -
+                    '''
                 }
             }
         }
 
-        stage('Docker Push') {
-            agent any
+        stage('Deploy Monitoring Stack') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub-creds', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
-                    sh 'echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin'
-                    sh "docker push ${REGISTRY_REPO}:${IMAGE_TAG}"
-                    sh "docker push ${REGISTRY_REPO}:latest"
-                    sh 'docker logout'
-                }
-            }
-        }
-
-        stage('Deploy with Helm') {
-            agent any
-            steps {
-            dir('flask-cicd-app') {
-                    withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
-                        sh "helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --set image.repository=${REGISTRY_REPO} --set image.tag=${IMAGE_TAG} --set image.pullPolicy=Always --set imagePullSecrets[0].name=dockerhub-pull --set db.user=$DB_USER --set db.password=$DB_PASS --wait --timeout 300s"
-                    }
-                    sh 'kubectl get pods -n helm-lab'
-                }
+                sh '''
+                    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
+                    helm repo update
+                    helm upgrade --install kube-prom prometheus-community/kube-prometheus-stack \
+                      -n monitoring \
+                      --set alertmanager.enabled=false \
+                      --set nodeExporter.enabled=false \
+                      --set kubeStateMetrics.enabled=false \
+                      --set prometheusOperator.resources.requests.cpu=50m \
+                      --set prometheusOperator.resources.requests.memory=128Mi \
+                      --set prometheus.prometheusSpec.resources.requests.cpu=100m \
+                      --set prometheus.prometheusSpec.resources.requests.memory=256Mi \
+                      --set grafana.resources.requests.cpu=50m \
+                      --set grafana.resources.requests.memory=128Mi \
+                      --set prometheus.prometheusSpec.serviceMonitorSelectorNilUsesHelmValues=false \
+                      --wait --timeout 600s
+                '''
             }
         }
     }
 
     post {
         success {
-            echo "Pipeline succeeded! Deployed ${REGISTRY_REPO}:${IMAGE_TAG}"
+            echo 'Infrastructure deployed successfully!'
+            sh 'kubectl get pods -n helm-lab'
+            sh 'kubectl get pods -n monitoring'
         }
         failure {
-            echo "Pipeline failed. Check logs."
+            echo 'Infrastructure deployment failed. Check logs.'
         }
     }
 }
