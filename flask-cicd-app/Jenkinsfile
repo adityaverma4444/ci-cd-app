@@ -1,10 +1,6 @@
 pipeline {
     agent any
 
-    environment {
-        HELM_INSECURE_SKIP_TLS_VERIFY = '1'
-    }
-
     stages {
         stage('Create Namespaces') {
             steps {
@@ -19,19 +15,57 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
                     sh '''
-                        helm repo add --insecure-skip-tls-verify bitnami https://charts.bitnami.com/bitnami || true
-                        helm repo update --insecure-skip-tls-verify
-                        helm upgrade --install mariadb-lab bitnami/mariadb \
-                          -n helm-lab \
-                          --set auth.rootPassword=$DB_PASS \
-                          --set auth.database=appdb \
-                          --set auth.username=$DB_USER \
-                          --set auth.password=$DB_PASS \
-                          --set primary.resources.requests.cpu=100m \
-                          --set primary.resources.requests.memory=256Mi \
-                          --set primary.resources.limits.cpu=250m \
-                          --set primary.resources.limits.memory=512Mi \
-                          --wait --timeout 300s
+                        cat <<EOF | kubectl apply -f -
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mariadb-lab
+  namespace: helm-lab
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mariadb-lab
+  template:
+    metadata:
+      labels:
+        app: mariadb-lab
+    spec:
+      containers:
+        - name: mariadb
+          image: mariadb:10.11
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: "$DB_PASS"
+            - name: MYSQL_DATABASE
+              value: appdb
+            - name: MYSQL_USER
+              value: "$DB_USER"
+            - name: MYSQL_PASSWORD
+              value: "$DB_PASS"
+          ports:
+            - containerPort: 3306
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mariadb-lab
+  namespace: helm-lab
+spec:
+  selector:
+    app: mariadb-lab
+  ports:
+    - port: 3306
+      targetPort: 3306
+EOF
+                        kubectl rollout status deployment/mariadb-lab -n helm-lab --timeout=120s
                     '''
                 }
             }
@@ -41,7 +75,7 @@ pipeline {
             steps {
                 sh '''
                     helm repo add --insecure-skip-tls-verify prometheus-community https://prometheus-community.github.io/helm-charts || true
-                    helm repo update --insecure-skip-tls-verify
+                    helm repo update
                     helm upgrade --install kube-prom prometheus-community/kube-prometheus-stack \
                       -n monitoring \
                       --set alertmanager.enabled=false \
