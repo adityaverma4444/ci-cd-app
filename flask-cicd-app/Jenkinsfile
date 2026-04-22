@@ -19,8 +19,8 @@ pipeline {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
                     sh '''
-                        helm repo add bitnami https://charts.bitnami.com/bitnami || true
-                        helm repo update
+                        helm repo add --insecure-skip-tls-verify bitnami https://charts.bitnami.com/bitnami || true
+                        helm repo update --insecure-skip-tls-verify
                         helm upgrade --install mariadb-lab bitnami/mariadb \
                           -n helm-lab \
                           --set auth.rootPassword=$DB_PASS \
@@ -40,8 +40,8 @@ pipeline {
         stage('Deploy Monitoring Stack') {
             steps {
                 sh '''
-                    helm repo add prometheus-community https://prometheus-community.github.io/helm-charts || true
-                    helm repo update
+                    helm repo add --insecure-skip-tls-verify prometheus-community https://prometheus-community.github.io/helm-charts || true
+                    helm repo update --insecure-skip-tls-verify
                     helm upgrade --install kube-prom prometheus-community/kube-prometheus-stack \
                       -n monitoring \
                       --set alertmanager.enabled=false \
