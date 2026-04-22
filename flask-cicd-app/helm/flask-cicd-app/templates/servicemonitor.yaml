@@ -1,9 +1,10 @@
+{{- if .Values.serviceMonitor.enabled }}
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
   name: flask-app-monitor
   labels:
-    release: prometheus   ##########
+    release: prometheus
 spec:
   namespaceSelector:
     matchNames:
@@ -15,3 +16,4 @@ spec:
     - port: http
       path: /metrics
       interval: 15s
+{{- end }}

@@ -216,3 +216,9 @@ db:
   name: appdb
   user: appuser
   password: app1234
+
+serviceMonitor:
+  enabled: false
+
+grafanaDashboard:
+  enabled: false
