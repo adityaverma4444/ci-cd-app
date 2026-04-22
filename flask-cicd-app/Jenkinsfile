@@ -1,6 +1,10 @@
 pipeline {
     agent any
 
+    environment {
+        HELM_INSECURE_SKIP_TLS_VERIFY = '1'
+    }
+
     stages {
         stage('Create Namespaces') {
             steps {
