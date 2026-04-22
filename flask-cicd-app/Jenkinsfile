@@ -80,7 +80,6 @@ EOF
                       -n monitoring \
                       --set alertmanager.enabled=false \
                       --set nodeExporter.enabled=false \
-                      --set kubeStateMetrics.enabled=false \
                       --set prometheusOperator.resources.requests.cpu=50m \
                       --set prometheusOperator.resources.requests.memory=128Mi \
                       --set prometheus.prometheusSpec.resources.requests.cpu=100m \
