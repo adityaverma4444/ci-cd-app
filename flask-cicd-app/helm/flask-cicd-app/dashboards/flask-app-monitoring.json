@@ -49,7 +49,7 @@
     {
       "title": "Total Requests",
       "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 8 },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
@@ -73,7 +73,7 @@
     {
       "title": "Error Rate (5xx)",
       "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 8 },
+      "gridPos": { "h": 6, "w": 6, "x": 6, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
@@ -98,7 +98,7 @@
     {
       "title": "Avg Request Duration",
       "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 8 },
+      "gridPos": { "h": 6, "w": 6, "x": 12, "y": 8 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
@@ -123,13 +123,46 @@
       }
     },
     {
+      "title": "MariaDB Up",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 6, "x": 18, "y": 8 },
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "targets": [
+        {
+          "expr": "max(kube_pod_status_ready{namespace=\"helm-lab\", pod=~\"mariadb-lab.*\", condition=\"true\"})",
+          "legendFormat": "MariaDB",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "value"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "1": { "text": "UP", "color": "green", "index": 0 } } },
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 1 } } }
+          ],
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "green", "value": 1 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
       "title": "Pod CPU Usage",
       "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container=\"flask-cicd-app\"}[5m])",
+          "expr": "rate(container_cpu_usage_seconds_total{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\"}[5m])",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -149,7 +182,7 @@
       "datasource": { "type": "prometheus", "uid": "prometheus" },
       "targets": [
         {
-          "expr": "container_memory_working_set_bytes{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\", container=\"flask-cicd-app\"}",
+          "expr": "container_memory_working_set_bytes{namespace=\"helm-lab\", pod=~\"flask-cicd-helm2.*\"}",
           "legendFormat": "{{pod}}",
           "refId": "A"
         }
@@ -171,5 +204,5 @@
   "timezone": "browser",
   "title": "Flask CI/CD App Monitoring",
   "uid": "flask-cicd-app",
-  "version": 2
+  "version": 3
 }
