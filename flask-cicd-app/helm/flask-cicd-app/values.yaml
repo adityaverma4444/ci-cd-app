@@ -222,3 +222,6 @@ serviceMonitor:
 
 grafanaDashboard:
   enabled: false
+
+alertRules:
+  enabled: true

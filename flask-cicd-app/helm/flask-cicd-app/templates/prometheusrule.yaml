@@ -1,0 +1,21 @@
+{{- if .Values.alertRules.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule # custom resource, not built-in K8s
+metadata:
+  name: {{ include "flask-cicd-app.fullname" . }}-alerts
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "flask-cicd-app.labels" . | nindent 4 }}
+    release: kube-prom # IMPORTANT: Prometheus Operator finds rules by this label
+spec:
+  groups:
+    - name: flask.rules
+      rules:
+        - alert: FlaskAppDown
+          expr: absent(up{namespace="helm-lab"}) or up{namespace="helm-lab"} == 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Flask app is down"
+{{- end }}

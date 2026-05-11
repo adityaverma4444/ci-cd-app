@@ -2669,3 +2669,450 @@ WHAT THIS STAGE IS ABOUT (One Line):
   - Grafana dashboard with 3 panels (rate, latency, total requests) ✓
   - Traffic generated, graphs show spikes correctly ✓
   - Jenkins pipeline passes with 300s timeout ✓
+
+================================================================================
+STAGE 13: INGRESS (NGINX Ingress Controller)
+================================================================================
+
+--------------------------------------------------------------------------------
+1. WHAT IS INGRESS & WHY WE NEED IT
+--------------------------------------------------------------------------------
+
+  PROBLEM:
+    Our Flask app was accessible at http://localhost:32678
+    32678 = random NodePort K8s picked. Changes on every restart.
+    Ugly, hard to remember, one port per service.
+
+  SOLUTION:
+    Ingress gives a clean URL: http://flask.local (port 80, no random number)
+    One entry point for all services, route by hostname/path.
+
+  THREE PIECES:
+    1. Ingress Controller = NGINX pod that handles traffic (the bouncer)
+    2. Ingress Resource   = YAML rules that say "flask.local → this service" (guest list)
+    3. Service            = existing K8s service that connects to pods (already had this)
+
+--------------------------------------------------------------------------------
+2. WHAT WE DID
+--------------------------------------------------------------------------------
+
+  Step 1: Installed NGINX Ingress Controller
+    Command: helm install ingress-nginx ingress-nginx/ingress-nginx
+             --namespace ingress-nginx --create-namespace
+    This created an NGINX pod + a LoadBalancer service on port 80.
+
+  Step 2: Created templates/ingress.yaml (Helm template)
+    Reads values.yaml and generates a K8s Ingress resource.
+    Key fields:
+      ingressClassName: nginx        → use NGINX controller
+      host: "flask.local"            → match this hostname
+      path: /                        → match all paths
+      backend service: flask-cicd-helm2, port 5000  → forward here
+
+  Step 3: Updated values.yaml
+    ingress.enabled: true
+    ingress.className: "nginx"
+    ingress.hosts[0].host: flask.local
+    ingress.hosts[0].paths[0].path: /
+    ingress.hosts[0].paths[0].pathType: Prefix
+
+  Step 4: Added hosts file entry
+    C:\Windows\System32\drivers\etc\hosts → 127.0.0.1 flask.local
+    Because flask.local is not a real domain. Hosts file tells the computer
+    "flask.local = myself (127.0.0.1)". In production, DNS handles this.
+
+  Step 5: Deployed via Helm
+    helm upgrade flask-cicd-helm2 helm/flask-cicd-app -n helm-lab --reuse-values
+      --set ingress.enabled=true --set ingress.className=nginx ...
+
+--------------------------------------------------------------------------------
+3. THE COMPLETE TRAFFIC FLOW (with actual values)
+--------------------------------------------------------------------------------
+
+  Browser types: http://flask.local
+        |
+        | Hosts file: flask.local = 127.0.0.1
+        | Browser adds port 80 automatically
+        v
+  127.0.0.1:80 → Ingress Controller (NGINX pod)
+        |
+        | kubectl get svc -n ingress-nginx shows:
+        | ingress-nginx-controller  LoadBalancer  localhost  80:32706/TCP
+        v
+  NGINX reads Ingress rules
+        |
+        | kubectl describe ingress -n helm-lab shows:
+        | flask.local / → flask-cicd-helm2:5000 (10.1.0.134, 10.1.0.137)
+        v
+  Service: flask-cicd-helm2 (ClusterIP 10.109.205.133:5000)
+        |
+        | kubectl get endpoints -n helm-lab shows:
+        | 10.1.0.134:5000, 10.1.0.137:5000
+        v
+  Pod (10.1.0.134 or 10.1.0.137) port 5000
+        |
+        v
+  app.py → {"message":"Hello from CI/CD Pipeline!","status":"running"}
+
+--------------------------------------------------------------------------------
+4. PORT BASICS (the part that was confusing)
+--------------------------------------------------------------------------------
+
+  What is a port?
+    A door number on a machine. Each app picks a door to stand behind.
+    Flask = door 5000. MariaDB = door 3306. NGINX = door 80.
+
+  "Listening" = an app is waiting behind that door for visitors.
+
+  Three Service Types:
+    ClusterIP    → No external door. Internal only. (MariaDB: 3306)
+    NodePort     → Random external door (32678) on your machine. (Flask old way)
+    LoadBalancer → External door 80 with nice address. (Ingress Controller)
+
+  5000:32678 means: door 32678 on your machine → forwards to port 5000 internally
+
+  What is path: / ?
+    URL = host + path.  http://flask.local/health
+                         ^^^^^^^^^^^        ^^^^^^
+                         HOST               PATH
+    path: / means "match everything" (/, /health, /metrics, /db-check)
+
+--------------------------------------------------------------------------------
+5. KUBERNETES SERVICE BASICS (how Service finds Pods)
+--------------------------------------------------------------------------------
+
+  Service uses a SELECTOR (labels) to find pods:
+    Selector: app.kubernetes.io/name=flask-cicd-app,
+              app.kubernetes.io/instance=flask-cicd-helm2
+
+  Deployment gives these same labels to every pod it creates.
+  Service scans: "who has these labels?" → finds 2 pods → adds them as Endpoints.
+
+  ENDPOINTS = the actual pod IPs the Service discovered.
+  kubectl get endpoints shows: 10.1.0.134:5000, 10.1.0.137:5000
+  kubectl get pods -o wide shows: same IPs. They match.
+
+  Service = fixed phone number. Endpoints = the actual desks it rings.
+
+--------------------------------------------------------------------------------
+6. ANALYSIS COMMANDS
+--------------------------------------------------------------------------------
+
+  kubectl get svc -n helm-lab            → list services (type, port)
+  kubectl describe svc <name> -n helm-lab → selector, endpoints, ports
+  kubectl get endpoints -n helm-lab      → pod IPs the service routes to
+  kubectl get pods -n helm-lab -o wide   → pod IPs (should match endpoints)
+  kubectl get ingress -n helm-lab        → ingress rules (host, path, address)
+  kubectl describe ingress -n helm-lab   → routing details + backends
+  kubectl get ingressclass               → installed ingress controllers
+  kubectl get svc -n ingress-nginx       → ingress controller service (port 80)
+  kubectl logs -n ingress-nginx -l app.kubernetes.io/name=ingress-nginx → NGINX logs
+
+  Reading NGINX logs:
+    192.168.65.3 "GET / HTTP/1.1" 200 [helm-lab-flask-cicd-helm2-5000] 10.1.0.137:5000
+    ^source IP    ^request        ^ok  ^which service                   ^which pod picked
+
+--------------------------------------------------------------------------------
+7. FILES CHANGED IN THIS STAGE
+--------------------------------------------------------------------------------
+
+  templates/ingress.yaml  → NEW: Helm template for K8s Ingress resource
+  values.yaml             → Changed: ingress.enabled=true, host=flask.local
+
+--------------------------------------------------------------------------------
+8. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: What is Ingress?
+  A: A K8s resource that manages external HTTP access to services. It provides
+     URL-based routing, SSL termination, and load balancing through one entry
+     point (port 80/443) instead of multiple NodePorts.
+
+  Q: What's the difference between Ingress and a Service?
+  A: Service connects pods internally and provides a stable endpoint.
+     Ingress sits in FRONT of the Service and handles external HTTP routing
+     by hostname and path. Ingress needs a Service to forward to.
+
+  Q: What is an Ingress Controller?
+  A: The actual software (like NGINX) that reads Ingress rules and routes
+     traffic. Without a controller running, Ingress resources do nothing.
+     Common controllers: NGINX, Traefik, HAProxy, AWS ALB, GCE.
+
+  Q: Why not just use NodePort?
+  A: NodePort wastes ports (one random port per service), doesn't support
+     host/path-based routing, and can't do SSL termination. Ingress gives
+     one clean entry point for all services.
+
+  Q: What's the hosts file for?
+  A: Maps domain names to IPs locally. Used in dev because flask.local isn't
+     a real domain. In production, real DNS (Route53, CloudFlare) handles this.
+
+  Q: How would you route multiple services with Ingress?
+  A: Multiple rules in the Ingress resource:
+       flask.local/         → flask-service:5000
+       flask.local/api      → api-service:8080
+       admin.local/         → admin-service:3000
+     One NGINX controller handles all of them.
+
+  Q: NodePort vs ClusterIP vs LoadBalancer?
+  A: ClusterIP = internal only (database). NodePort = random external port.
+     LoadBalancer = cloud-provided external IP on port 80/443.
+
+--------------------------------------------------------------------------------
+9. STAGE 13 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - NGINX Ingress Controller pod running in ingress-nginx namespace ✓
+  - Ingress resource created with host flask.local, path / ✓
+  - kubectl describe ingress shows correct backend and pod IPs ✓
+  - Hosts file entry: 127.0.0.1 flask.local ✓
+  - http://flask.local returns app response ✓
+  - NGINX logs show load balancing between pods ✓
+  - Changes committed and pushed to GitHub ✓
+
+================================================================================
+                    STAGE 14: ALERTING (PrometheusRule + Alertmanager)
+================================================================================
+
+WHAT THIS STAGE DOES:
+  Prometheus already collects metrics (Stage 12). Now we define RULES that
+  say "if this condition stays true for X minutes, fire an alert."
+  Alertmanager receives fired alerts and can send email, Slack, PagerDuty.
+
+--------------------------------------------------------------------------------
+1. THE THREE PLAYERS
+--------------------------------------------------------------------------------
+
+  Prometheus       → Collects metrics, evaluates alert rules every 30s
+  PrometheusRule   → CRD (Custom Resource) that defines the alert condition
+  Alertmanager     → Receives fired alerts, routes to email/Slack/PagerDuty
+
+  Flow:
+    Rule condition true → PENDING → (for: 1m) → FIRING → Alertmanager → Notify
+
+--------------------------------------------------------------------------------
+2. ALERT STATES
+--------------------------------------------------------------------------------
+
+  INACTIVE  = Rule is loaded. Condition is false. All good.
+  PENDING   = Condition just became true. Waiting for "for: 1m" timer.
+  FIRING    = Condition was true for full duration. Alert is active.
+
+  Why "for: 1m" exists: prevents false alarms from brief 30-second blips.
+  Only alert if the problem persists for a full minute.
+
+--------------------------------------------------------------------------------
+3. THE PROMETHEUSRULE CRD
+--------------------------------------------------------------------------------
+
+  File: helm/flask-cicd-app/templates/prometheusrule.yaml
+
+  {{- if .Values.alertRules.enabled }}
+  apiVersion: monitoring.coreos.com/v1
+  kind: PrometheusRule                    ← NOT a built-in K8s object
+  metadata:
+    name: flask-cicd-helm2-alerts
+    namespace: helm-lab
+    labels:
+      release: kube-prom                 ← CRITICAL label (see section 4)
+  spec:
+    groups:
+      - name: flask.rules
+        rules:
+          - alert: FlaskAppDown
+            expr: absent(up{namespace="helm-lab"}) or up{namespace="helm-lab"} == 0
+            for: 1m
+            labels:
+              severity: critical
+            annotations:
+              summary: "Flask app is down"
+  {{- end }}
+
+  Controlled by values.yaml:
+    alertRules:
+      enabled: true
+
+  Jenkins deploys it with:
+    --set alertRules.enabled=true
+
+--------------------------------------------------------------------------------
+4. THE release: kube-prom LABEL -- WHY IT MATTERS
+--------------------------------------------------------------------------------
+
+  Prometheus Operator scans the cluster for PrometheusRule objects.
+  But it does NOT load ALL rules it finds. It filters by label:
+
+    kubectl get prometheus -n monitoring -o jsonpath="{.items[0].spec.ruleSelector}"
+    → {"matchLabels":{"release":"kube-prom"}}
+
+  This means:
+    PrometheusRule has label release=kube-prom  → Operator loads it ✓
+    PrometheusRule has any other label          → Operator ignores it ✗
+
+  The label name comes from what you named your Helm release when you installed
+  kube-prometheus-stack. We named it "kube-prom", so the label must be
+  "release: kube-prom".
+
+  How to verify the rule was loaded:
+    kubectl get prometheusrule -n helm-lab
+    → NAME                    AGE
+      flask-cicd-helm2-alerts  5m
+
+  How to verify Prometheus loaded it:
+    http://localhost:9090/alerts  → should show FlaskAppDown as INACTIVE
+
+--------------------------------------------------------------------------------
+5. WHY absent() INSTEAD OF == 0
+--------------------------------------------------------------------------------
+
+  WRONG expression: up{job="flask-cicd-helm2"} == 0
+  RIGHT expression: absent(up{namespace="helm-lab"}) or up{namespace="helm-lab"} == 0
+
+  Reason:
+    When Flask pods are running:
+      Prometheus scrapes them → creates metric: up{namespace="helm-lab"} = 1
+
+    When replicas=0, pods are GONE:
+      Prometheus has nothing to scrape → metric DISAPPEARS entirely
+      It is NOT set to 0. It just does not exist.
+
+    So "up == 0" never matches because there is no series to compare.
+
+    absent() returns a result when the metric does NOT exist.
+    When pods=0 → absent() fires → alert goes PENDING → FIRING ✓
+
+    Also note: job label mismatch was another issue. The ServiceMonitor was
+    named "flask-app-monitor" so the scraped job label was "flask-app-monitor"
+    not "flask-cicd-helm2". Using namespace="helm-lab" is more reliable.
+
+--------------------------------------------------------------------------------
+6. ALERTMANAGER
+--------------------------------------------------------------------------------
+
+  What it does:
+    - Receives fired alerts from Prometheus
+    - Groups similar alerts (deduplication)
+    - Routes alerts to receivers: Slack, email, PagerDuty, webhook
+    - Supports silences (mute alerts during maintenance)
+    - Supports inhibition rules (if major alert fires, suppress minor ones)
+
+  In our setup:
+    - alertmanager.enabled=false (disabled to save local RAM)
+    - In production: enable it and configure Slack/email receivers
+
+  Port forward to access UI (when enabled):
+    kubectl port-forward -n monitoring svc/kube-prom-kube-prometheus-alertmanager 9093:9093
+    → http://localhost:9093
+
+  Why we disabled it locally:
+    It uses ~150MB RAM. Our Docker Desktop K8s was already near resource limit
+    running Prometheus + Grafana + kube-state-metrics + Flask + MariaDB + NGINX.
+    Adding Alertmanager caused the cluster to crash. Disabled to keep stable.
+
+--------------------------------------------------------------------------------
+7. HOW TO MAKE THE ALERT FIRE (DEMO STEPS)
+--------------------------------------------------------------------------------
+
+  Step 1: Port forward Prometheus
+    kubectl port-forward -n monitoring svc/kube-prom-kube-prometheus-prometheus 9090:9090
+
+  Step 2: Open http://localhost:9090/alerts → see FlaskAppDown as INACTIVE
+
+  Step 3: Scale Flask to 0 replicas
+    kubectl scale deployment flask-cicd-helm2 --replicas=0 -n helm-lab
+
+  Step 4: Wait 90 seconds, refresh browser
+    → INACTIVE → PENDING (~30s) → FIRING (~90s)
+
+  Step 5: Bring app back
+    kubectl scale deployment flask-cicd-helm2 --replicas=2 -n helm-lab
+    → Alert goes back to INACTIVE after a few minutes
+
+--------------------------------------------------------------------------------
+8. ANALYSIS COMMANDS
+--------------------------------------------------------------------------------
+
+  # Check if PrometheusRule exists in cluster
+  kubectl get prometheusrule -n helm-lab
+
+  # See full rule details
+  kubectl get prometheusrule flask-cicd-helm2-alerts -n helm-lab -o yaml
+
+  # Check what label Prometheus Operator is filtering by
+  kubectl get prometheus -n monitoring -o jsonpath="{.items[0].spec.ruleSelector}"
+
+  # Check if Prometheus watches all namespaces (empty = yes)
+  kubectl get prometheus -n monitoring -o jsonpath="{.items[0].spec.ruleNamespaceSelector}"
+
+  # Access Prometheus UI
+  kubectl port-forward -n monitoring svc/kube-prom-kube-prometheus-prometheus 9090:9090
+  → http://localhost:9090/alerts
+
+  # Query to test expression manually in Prometheus UI
+  → absent(up{namespace="helm-lab"})
+
+--------------------------------------------------------------------------------
+9. FILES CHANGED IN STAGE 14
+--------------------------------------------------------------------------------
+
+  helm/flask-cicd-app/templates/prometheusrule.yaml  → NEW: alert rule template
+  helm/flask-cicd-app/values.yaml                    → Added alertRules.enabled: true
+  Jenkinsfile                                        → Added --set alertRules.enabled=true
+                                                        and --set ingress.enabled=true
+
+--------------------------------------------------------------------------------
+10. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: What is a PrometheusRule?
+  A: A Kubernetes Custom Resource Definition (CRD) added by Prometheus Operator.
+     It defines alert conditions in PromQL. Prometheus evaluates the expression
+     every 30 seconds. When true for the configured duration, the alert fires.
+     In my project I created a FlaskAppDown rule that fires when the Flask app
+     has no running pods.
+
+  Q: How does Prometheus Operator discover PrometheusRule objects?
+  A: Via label matching. The Operator's ruleSelector defines which labels to look
+     for. In my setup it looks for "release: kube-prom" (matching the Helm release
+     name). Rules without this label are ignored completely.
+
+  Q: What are the three alert states in Prometheus?
+  A: INACTIVE: condition is false, no problem.
+     PENDING: condition became true, waiting for the "for:" duration to complete.
+     FIRING: condition stayed true for the full duration, alert is active.
+
+  Q: What is Alertmanager?
+  A: A component that receives fired alerts from Prometheus and routes them to
+     notification channels like Slack, email, or PagerDuty. It also handles
+     grouping (deduplication), silences (mute during maintenance), and inhibition
+     (suppress minor alerts if a major one is firing).
+
+  Q: Why did you use absent() instead of checking up == 0?
+  A: When all pods are gone (replicas=0), Prometheus has no targets to scrape.
+     The "up" metric disappears entirely -- it's not set to 0, it just doesn't
+     exist. The expression "up == 0" would never match because there's no series
+     to compare. absent() specifically detects when a metric is missing, which is
+     exactly the "app completely gone" scenario.
+
+  Q: What is PromQL?
+  A: Prometheus Query Language. Used to query and aggregate time-series metrics.
+     Example: absent(up{namespace="helm-lab"}) means "is there NO 'up' metric
+     in the helm-lab namespace?" -- returns a result when nothing is scraped there.
+
+  Q: How would you set up Slack notifications from Prometheus?
+  A: Configure Alertmanager with a Slack receiver in its config:
+     - Define a route matching alert labels (e.g., severity=critical)
+     - Define a receiver with the Slack webhook URL and channel
+     - Alertmanager sends a formatted message to Slack when alert fires.
+     In kube-prometheus-stack this is done via Helm values under alertmanager.config.
+
+--------------------------------------------------------------------------------
+11. STAGE 14 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - PrometheusRule CRD deployed: kubectl get prometheusrule -n helm-lab ✓
+  - Rule has label release: kube-prom ✓
+  - Prometheus UI shows FlaskAppDown as INACTIVE (http://localhost:9090/alerts) ✓
+  - Scaled to 0 replicas → alert went PENDING ✓
+  - absent() expression confirmed correct (== 0 doesn't work for scale-to-0) ✓
+  - alertRules.enabled=true in values.yaml ✓
+  - Jenkinsfile updated with --set alertRules.enabled=true ✓
+  - Changes committed and pushed to GitHub ✓
