@@ -3,33 +3,142 @@
 ================================================================================
 
 PROJECT: flask-cicd-app
-TECH STACK: Python Flask, Git, Docker, Jenkins, Webhook, Kubernetes (Minikube)
+TECH STACK:
+  App      : Python Flask + MariaDB
+  CI/CD    : Git (GitHub), Docker, Docker Hub, Jenkins (multibranch + DinD)
+  Runtime  : Kubernetes (Docker Desktop K8s), Helm
+  Routing  : NGINX Ingress Controller
+  Observe  : Prometheus + Grafana (kube-prometheus-stack)
+  Alert    : PrometheusRule + Alertmanager (disabled locally)
+  Logs     : Loki + Promtail (loki-stack)
+  Cloud    : Azure (planned)
+  IaC      : Terraform (planned)
 
 ================================================================================
                          STAGE-BY-STAGE ROADMAP
 ================================================================================
 
-Stage 1: Python App + Git          → Create Flask app, push to GitHub
-Stage 2: Dockerfile                → Containerize the app
-Stage 3: Jenkinsfile (CI Pipeline) → Build → Test → Docker Build → Push
-Stage 4: GitHub Webhook            → Auto-trigger Jenkins on git push
-Stage 5: Kubernetes + Minikube     → Deploy using deployment.yaml & service.yaml
-Stage 6: Full CI/CD Pipeline       → End-to-end: push code → app deployed
+[DONE]    Stage 1 : Python App + Git           → Flask app, pushed to GitHub
+[DONE]    Stage 2 : Dockerfile                 → Containerized the app
+[DONE]    Stage 3 : Jenkinsfile (CI Pipeline)  → Build → Test → Push
+[DONE]    Stage 4 : GitHub Webhook             → Auto-trigger on git push
+[DONE]    Stage 5 : Kubernetes + Minikube      → deployment.yaml, service.yaml
+[DONE]    Stage 6 : Full CI/CD Pipeline        → End-to-end push → deploy
+[DONE]    Stage 6C: DinD → Minikube image flow → Image registry tricky part
+[DONE]    Stage 7 : Helm Migration             → K8s package manager
+[DONE]    Stage 8 : MariaDB Connectivity       → Database + debugging
+[DONE]    Stage 9 : Jenkins + Helm Integration → Pipeline runs helm upgrade
+[DONE]    Stage 10: Docker Hub Registry Flow   → Image build → push → pull
+[DONE]    Stage 11: Kubernetes Secrets         → DB + DockerHub pull secrets
+[DONE]    Stage 12: Prometheus + Grafana       → Metrics + dashboards
+[DONE]    Stage 13: Ingress (NGINX)            → flask.local host routing
+[DONE]    Stage 14: Alerting (PrometheusRule)  → absent() FlaskAppDown alert
+[DONE]    Stage 15: Logging (Loki + Promtail)  → Centralized log queries
+
+[NEXT]    Stage 16: RBAC & Security            → ServiceAccount, Role, RoleBinding
+[PLAN]    Stage 17: Terraform Basics           → IaC for K8s + Azure resources
+[PLAN]    Stage 18: Cloud Basics (Azure)       → AKS, ACR, AZ-104 prep
+[PLAN]    Stage 19: Interview Prep             → Scenario questions, mock interviews
+[PLAN]    Stage 20: Python + SQL + Linux Revn  → Core skills for 2 YOE screening
+
+[BONUS]   Multi-tool CI/CD on ilgss1063 (on-prem):
+            - Phase 1: Jenkins (current setup) → GitLab Runner installed
+            - Phase 2: Jenkins + GitLab CI/CD side by side
+            - Phase 3: Add Azure DevOps Pipelines
+            - Phase 4: Compare/migrate fully to Azure DevOps
+
+================================================================================
+                    DEFERRED / FUTURE WORK (NOT MAIN STAGES)
+================================================================================
+
+Things we discussed and said "later" -- NOT counted as separate stages,
+but worth coming back to when time/resources allow.
+
+  1. Enable Alertmanager UI + Slack/email receivers
+       - Disabled locally (RAM constraint)
+       - In production setup: enable + configure receiver
+       - Helm: --set alertmanager.enabled=true with values for slack/email config
+
+  2. Stage 12 (Monitoring) deeper revisit
+       - User found Stage 12 dense; we partially recapped via Stages 14 & 15
+       - Full hands-on dashboard authoring deferred (not required for 2 YOE)
+
+  3. Real Helm rollback demo
+       - We know commands (helm history, helm rollback)
+       - Never demoed a live failed deploy → rollback flow
+
+  4. DinD TLS cert persistence
+       - Hit twice when DinD container was recreated
+       - Fix: always use --hostname jenkins-dind so certs match the hostname
+       - Documented in chat, not yet in notes
+
+  5. Grafana admin password rotation
+       - Currently using auto-generated password from K8s secret
+       - In production: integrate with SSO / OAuth (Azure AD, Google)
+
+  6. Production-grade secrets management
+       - Currently using K8s Secrets (base64, not encrypted at rest by default)
+       - Production options: HashiCorp Vault, Azure Key Vault, Sealed Secrets
+       - Will revisit lightly in Stage 16 (RBAC + Security)
+
+  7. GitOps with ArgoCD or Flux
+       - Mentioned in interview answers, not implemented
+       - Replaces "kubectl apply in Jenkins" with Git-as-source-of-truth
+       - Not planned unless interviewer specifically asks for demo
+
+  8. NGINX Ingress with real DNS + TLS
+       - Currently using flask.local + hosts file + HTTP
+       - Production: real domain via Route53/CloudFlare + cert-manager + Let's Encrypt
+       - Will touch in Stage 18 (Cloud) when on AKS with real DNS
+
+  9. Multibranch parallel stages in Jenkins
+       - Discussed: "why not parallel stages?"
+       - We kept sequential for clarity, parallel is a 1-line refactor (parallel{})
+       - Easy to demo if interviewer asks
+
+  10. Loki alerting (Loki Ruler)
+       - Mentioned: alert on log patterns (e.g., 500 error rate spike)
+       - Not implemented; conceptually understood
+
+  11. Horizontal Pod Autoscaler (HPA)
+       - Mentioned in scenario answers, not deployed
+       - Easy add when running on AKS where metrics-server is built-in
+
+  12. Resource quotas + LimitRange per namespace
+       - K8s production practice; we use resources.requests but no quota objects
+
+  13. Azure Labs (AZ-104)
+       - Separate parallel learning track (file: az104-notes.txt)
+       - Not part of CI/CD stages but feeds into Stage 18
 
 ================================================================================
                     PROJECT STRUCTURE (Final)
 ================================================================================
 
 flask-cicd-app/
-├── app.py                  # Flask REST API
-├── requirements.txt        # Python dependencies
-├── test_app.py             # Unit tests
-├── Dockerfile              # Stage 2
-├── Jenkinsfile             # Stage 3
-├── k8s/
-│   ├── deployment.yaml     # Stage 5
-│   └── service.yaml        # Stage 5
-└── README.md
+├── app.py                                # Flask REST API
+├── requirements.txt                      # Python dependencies
+├── test_app.py                           # Unit tests
+├── Dockerfile                            # Stage 2
+├── Jenkinsfile                           # Stage 3 / main branch (CI/CD)
+└── helm/flask-cicd-app/
+    ├── Chart.yaml                        # Stage 7
+    ├── values.yaml                       # All toggles (image, ingress, alertRules)
+    └── templates/
+        ├── deployment.yaml               # Stage 5
+        ├── service.yaml                  # Stage 5
+        ├── ingress.yaml                  # Stage 13
+        ├── servicemonitor.yaml           # Stage 12
+        ├── prometheusrule.yaml           # Stage 14
+        ├── grafana-dashboard-configmap.yaml  # Stage 12
+
+(infra branch contains only a Jenkinsfile that bootstraps the cluster:
+ namespaces, MariaDB, kube-prometheus-stack, loki-stack)
+
+(Local files used for prep, NOT committed to project repo:
+ CICD_Stage1_Notes.txt    -- this file
+ INTERVIEW_QA_DEVOPS.txt  -- interview prep for ATT GenAI call
+ az104-notes.txt          -- Azure cert study notes)
 
 ================================================================================
                     STAGE 1: PYTHON APP + GIT
