@@ -91,6 +91,22 @@ EOF
                 '''
             }
         }
+
+        stage('Deploy Loki Stack') {
+            steps {
+                sh '''
+                    helm repo add --insecure-skip-tls-verify grafana https://grafana.github.io/helm-charts || true
+                    helm repo update
+                    helm upgrade --install loki grafana/loki-stack \
+                      -n monitoring \
+                      --set grafana.enabled=false \
+                      --set prometheus.enabled=false \
+                      --set loki.persistence.enabled=false \
+                      --set loki.datasource.isDefault=false \
+                      --wait --timeout 600s
+                '''
+            }
+        }
     }
 
     post {
