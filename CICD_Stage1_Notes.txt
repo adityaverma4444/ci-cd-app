@@ -3116,3 +3116,299 @@ WHAT THIS STAGE DOES:
   - alertRules.enabled=true in values.yaml ✓
   - Jenkinsfile updated with --set alertRules.enabled=true ✓
   - Changes committed and pushed to GitHub ✓
+
+================================================================================
+                    STAGE 15: LOGGING (Loki + Promtail + Grafana)
+================================================================================
+
+WHAT THIS STAGE DOES:
+  Our Flask app prints logs to stdout. With "kubectl logs" we can see them
+  one pod at a time. The problem: when a pod crashes, logs are gone. When
+  there are 10 pods, we can't manually check each one.
+
+  This stage installs a CENTRAL log collection system:
+    Promtail collects → Loki stores → Grafana shows all logs in one place.
+
+--------------------------------------------------------------------------------
+1. THE THREE PLAYERS (easy way)
+--------------------------------------------------------------------------------
+
+  Promtail (LOG COLLECTOR)
+    - Runs as a DaemonSet (one pod per node).
+    - Reads pod log files from /var/log/pods/...
+    - Adds K8s labels (namespace, pod, app) to each line.
+    - Ships logs to Loki over HTTP.
+
+  Loki (LOG STORAGE + QUERY API)
+    - Runs as a StatefulSet (port 3100).
+    - Receives logs from Promtail.
+    - Indexes ONLY the labels (not the full log text), so it's lightweight.
+    - Provides an HTTP query API for LogQL.
+
+  Grafana (VISUALIZER - already installed in Stage 12)
+    - Asks Loki for logs over HTTP.
+    - Shows them in the Explore tab.
+    - We add Loki as a "datasource" in Grafana.
+
+  Flow:
+    Flask pod → stdout → /var/log/pods file → Promtail reads → ships to Loki
+    User in Grafana Explore → types LogQL → Grafana asks Loki → shows logs
+
+--------------------------------------------------------------------------------
+2. INSTALL (ONE HELM COMMAND)
+--------------------------------------------------------------------------------
+
+  helm repo add grafana https://grafana.github.io/helm-charts
+  helm repo update
+  helm install loki grafana/loki-stack -n monitoring \
+    --set grafana.enabled=false \      ← we already have Grafana
+    --set prometheus.enabled=false     ← we already have Prometheus
+
+  This creates:
+    StatefulSet: loki-0
+    DaemonSet:   loki-promtail-<random>
+    Service:     loki (ClusterIP, port 3100)
+    ConfigMap:   loki-loki-stack (datasource definition for Grafana)
+
+--------------------------------------------------------------------------------
+3. THE MAGIC: HOW GRAFANA AUTO-DETECTED LOKI
+--------------------------------------------------------------------------------
+
+  We did NOT manually add Loki as a datasource in the Grafana UI.
+  It just appeared. Here is exactly why.
+
+  The Grafana pod from kube-prometheus-stack actually has 3 containers:
+    grafana                    ← the main app
+    grafana-sc-dashboard       ← sidecar watching for dashboard ConfigMaps
+    grafana-sc-datasources     ← sidecar watching for datasource ConfigMaps
+
+  The DATASOURCES sidecar watches for ConfigMaps with this label:
+    grafana_datasource: "1"
+
+  The DASHBOARDS sidecar watches for a different label:
+    grafana_dashboard: "1"
+
+  When you installed loki-stack, it created a ConfigMap called
+  "loki-loki-stack" with label grafana_datasource: "1" and this content:
+
+    apiVersion: 1
+    datasources:
+    - name: Loki
+      type: loki
+      url: "http://loki:3100"
+      isDefault: false
+
+  The sidecar saw the label → loaded the file into Grafana → Loki appeared
+  in the UI automatically.
+
+  Same pattern is used for our Flask dashboard:
+    helm/flask-cicd-app/templates/grafana-dashboard-configmap.yaml
+    has label: grafana_dashboard: "1"
+    The dashboard sidecar picks it up the same way.
+
+  Two sidecars, two labels, two different jobs. Same pattern.
+
+--------------------------------------------------------------------------------
+4. THE CRASHLOOP STORY (Real Issue Faced)
+--------------------------------------------------------------------------------
+
+  After installing Loki, Grafana went into CrashLoopBackOff.
+
+  Logs showed:
+    Datasource provisioning error: datasource.yaml config is invalid.
+    Only one datasource per organization can be marked as default
+
+  Root cause: TWO datasource ConfigMaps both had isDefault: true
+    1. kube-prom-kube-prometheus-grafana-datasource  → Prometheus, default=true
+    2. loki-loki-stack                               → Loki, default=true
+
+  Each Helm chart sets itself as default by default (it doesn't know other
+  charts exist). Grafana refuses to start if it sees two defaults.
+
+  Fix: change the Loki ConfigMap to isDefault: false
+       (Prometheus stays default because we query metrics more often).
+
+  Result: Grafana booted cleanly. Both datasources still available.
+  Loki is just not auto-selected - we pick it manually in Explore.
+
+  Important takeaway:
+    isDefault: true   = pre-selected in dropdowns when you open them
+    isDefault: false  = still available, you just have to pick it manually
+    The datasource is loaded either way - the label "grafana_datasource: 1"
+    is what makes it appear. isDefault only controls which one is auto-shown.
+
+--------------------------------------------------------------------------------
+5. WHO TALKS TO WHO (CRITICAL UNDERSTANDING)
+--------------------------------------------------------------------------------
+
+  Common confusion: people think Prometheus pushes data to Grafana.
+  TRUTH: Grafana is a CLIENT. It asks others for data over HTTP.
+
+  Grafana → asks Prometheus → "give me CPU values"
+  Grafana → asks Loki       → "give me log lines matching this query"
+  Grafana → asks MariaDB    → "give me table rows"
+
+  Loki and Prometheus DO NOT talk to each other. They are completely
+  independent systems that share only one thing: Grafana queries both.
+
+  Metrics path:
+    Flask /metrics endpoint → Prometheus scrapes → stores → Grafana queries
+
+  Logs path:
+    Flask stdout → /var/log/pods file → Promtail ships → Loki stores
+    → Grafana queries
+
+  Two parallel pipelines. One visualization layer (Grafana) on top.
+
+--------------------------------------------------------------------------------
+6. LOGQL (THE QUERY LANGUAGE)
+--------------------------------------------------------------------------------
+
+  Same syntax style as PromQL. Two parts:
+    {label_selector}  |= "text filter"   (optional filter)
+
+  Examples:
+    {namespace="helm-lab"}                   → all logs from Flask namespace
+    {namespace="helm-lab", app="flask-cicd-app"}  → only Flask app logs
+    {namespace="helm-lab"} |= "/health"      → only lines with /health
+    {namespace="helm-lab"} |= "ERROR"        → only error lines
+    {namespace="helm-lab"} != "/metrics"     → exclude metrics scrape lines
+
+  Operators:
+    |=  → contains
+    !=  → does not contain
+    |~  → regex match
+    !~  → regex no match
+
+--------------------------------------------------------------------------------
+7. LOKI VS ELK STACK
+--------------------------------------------------------------------------------
+
+                       Loki                    ELK (Elasticsearch + Kibana)
+  Storage           label-indexed only         full-text indexed
+  RAM/CPU           ~100-200MB                 1GB+
+  Query language    LogQL                      Lucene / KQL
+  Visualization     Grafana                    Kibana
+  Best for          K8s, cloud-native, free    Heavy search, enterprise
+
+  We picked Loki because:
+    - Same Grafana we already use
+    - Light on resources (Docker Desktop has limits)
+    - Standard for K8s, used by many companies
+
+--------------------------------------------------------------------------------
+8. VALIDATION COMMANDS
+--------------------------------------------------------------------------------
+
+  # 1. Pods running
+  kubectl get pods -n monitoring
+  # Expect: loki-0, loki-promtail-xxxxx, kube-prom-grafana, prometheus
+
+  # 2. Services exist
+  kubectl get svc -n monitoring | Select-String "loki"
+  # Expect: loki ClusterIP ... 3100/TCP
+
+  # 3. Loki itself is healthy
+  kubectl port-forward -n monitoring svc/loki 3100:3100
+  # Browser: http://localhost:3100/ready → "ready"
+
+  # 4. Datasource ConfigMap exists with magic label
+  kubectl get configmap -n monitoring -l grafana_datasource=1
+  # Expect both: kube-prom-...-grafana-datasource AND loki-loki-stack
+
+  # 5. Promtail is shipping logs
+  kubectl get pods -n monitoring | Select-String "promtail"
+  kubectl logs <promtail-pod-name> -n monitoring --tail=20
+  # Look for: "successfully sent chunk" to loki:3100
+
+  # 6. Grafana port-forward and login
+  kubectl port-forward -n monitoring svc/kube-prom-grafana 3500:80
+  # Browser: http://localhost:3500
+  # Get password:
+  $encoded = kubectl get secret -n monitoring kube-prom-grafana -o jsonpath="{.data.admin-password}"
+  [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($encoded))
+  # User: admin, Password: (output of above)
+
+  # 7. Run a LogQL query in Grafana → Explore → Loki
+  {namespace="helm-lab"}
+
+--------------------------------------------------------------------------------
+9. FILES / RESOURCES INVOLVED
+--------------------------------------------------------------------------------
+
+  Cluster resources (created by Helm, not in our repo):
+    StatefulSet: loki-0                          (loki-stack chart)
+    DaemonSet:   loki-promtail-<random>          (loki-stack chart)
+    Service:     loki, loki-headless, loki-memberlist
+    ConfigMap:   loki-loki-stack (label: grafana_datasource=1)
+
+  Our repo: NO Helm template added for Loki. Loki is an infrastructure tool
+  installed cluster-wide (like Prometheus, NGINX Ingress). We add it to the
+  infra branch Jenkinsfile so the Deploy Monitoring Stack step also deploys Loki.
+
+  Infra Jenkinsfile gets a new stage:
+    stage('Deploy Loki Stack') {
+      helm repo add grafana ...
+      helm repo update
+      helm upgrade --install loki grafana/loki-stack -n monitoring
+        --set grafana.enabled=false
+        --set prometheus.enabled=false
+        --set loki.datasource.isDefault=false
+    }
+
+--------------------------------------------------------------------------------
+10. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: How is logging set up in your project?
+  A: I use Loki for centralized log storage and Promtail as the log collector.
+     Promtail runs as a DaemonSet, reads pod log files from /var/log/pods,
+     adds Kubernetes labels (namespace, pod, app), and ships to Loki on
+     port 3100. Loki stores logs indexed only by labels, which is much
+     lighter than full-text indexing like Elasticsearch. I view logs in
+     Grafana's Explore tab using LogQL queries.
+
+  Q: How did Grafana detect Loki without manual setup?
+  A: The kube-prometheus-stack Grafana pod has a sidecar container that
+     watches the K8s API for ConfigMaps with the label grafana_datasource: "1".
+     The loki-stack Helm chart automatically creates such a ConfigMap with
+     the Loki connection URL. The sidecar loads it into Grafana on the fly -
+     no Grafana restart, no manual UI clicks.
+
+  Q: Difference between Loki and ELK?
+  A: Loki indexes only labels, ELK indexes full log text. Loki uses LogQL
+     (simple), ELK uses Lucene/KQL (more powerful but heavier). Loki is
+     much lighter on RAM and CPU. ELK is better for advanced search at scale.
+     For K8s cloud-native setups, Loki is the standard choice.
+
+  Q: What is Promtail and where does it run?
+  A: Promtail is a log shipper. It runs as a DaemonSet so there's exactly
+     one Promtail pod per cluster node. It tails the pod log files on that
+     node, applies labels, and POSTs the lines to Loki's push API.
+
+  Q: Have you debugged a Grafana issue?
+  A: Yes, my Grafana crashed after I added Loki. Logs showed two datasources
+     both marked as default - the kube-prometheus-stack chart had marked
+     Prometheus as default, and the loki-stack chart had marked Loki as
+     default too. Grafana refuses to start with two defaults. I set Loki's
+     isDefault to false, since Prometheus is queried more often. Grafana
+     restarted cleanly. Both datasources still queryable; only the default
+     selection changed.
+
+  Q: Sample LogQL query?
+  A: {namespace="helm-lab", app="flask-cicd-app"} |= "ERROR"
+     Selects logs from my Flask app in the helm-lab namespace,
+     filtered to lines containing "ERROR".
+
+--------------------------------------------------------------------------------
+11. STAGE 15 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - loki-stack installed via Helm in monitoring namespace ✓
+  - loki-0 pod Running ✓
+  - loki-promtail-xxxxx DaemonSet pod Running ✓
+  - Service "loki" reachable on port 3100 ✓
+  - ConfigMap "loki-loki-stack" has label grafana_datasource: "1" ✓
+  - Grafana sidecar auto-loaded Loki as datasource ✓
+  - Loki datasource isDefault: false (fixed crashloop) ✓
+  - LogQL query {namespace="helm-lab"} returns 100+ log lines ✓
+  - Stage 15 added to infra branch Jenkinsfile (auto-deploys on cluster setup) ✓
