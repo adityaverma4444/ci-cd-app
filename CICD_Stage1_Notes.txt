@@ -34,9 +34,9 @@ TECH STACK:
 [DONE]    Stage 13: Ingress (NGINX)            → flask.local host routing
 [DONE]    Stage 14: Alerting (PrometheusRule)  → absent() FlaskAppDown alert
 [DONE]    Stage 15: Logging (Loki + Promtail)  → Centralized log queries
+[DONE]    Stage 16: RBAC & Security            → ServiceAccount + Role + RoleBinding
 
-[NEXT]    Stage 16: RBAC & Security            → ServiceAccount, Role, RoleBinding
-[PLAN]    Stage 17: Terraform Basics           → IaC for K8s + Azure resources
+[NEXT]    Stage 17: Terraform Basics           → IaC for K8s + Azure resources
 [PLAN]    Stage 18: Cloud Basics (Azure)       → AKS, ACR, AZ-104 prep
 [PLAN]    Stage 19: Interview Prep             → Scenario questions, mock interviews
 [PLAN]    Stage 20: Python + SQL + Linux Revn  → Core skills for 2 YOE screening
@@ -3521,3 +3521,344 @@ WHAT THIS STAGE DOES:
   - Loki datasource isDefault: false (fixed crashloop) ✓
   - LogQL query {namespace="helm-lab"} returns 100+ log lines ✓
   - Stage 15 added to infra branch Jenkinsfile (auto-deploys on cluster setup) ✓
+
+================================================================================
+                    STAGE 16: RBAC & SECURITY (ServiceAccount + Role + RoleBinding)
+================================================================================
+
+WHAT THIS STAGE DOES:
+  Until now our Flask pod used the namespace's "default" ServiceAccount which
+  has ZERO permissions. That's actually fine because Flask doesn't call the
+  K8s API, but it's bad practice. RBAC is THE most asked security topic in
+  K8s interviews. This stage gives the Flask pod its own identity with
+  explicit, minimal permissions -- following the principle of least privilege.
+
+--------------------------------------------------------------------------------
+1. THE CORE CONCEPT (EASY WAY)
+--------------------------------------------------------------------------------
+
+  RBAC = Role-Based Access Control
+  It answers: WHO can do WHAT, WHERE?
+
+  WHO        - User (humans) OR ServiceAccount (pods/code)
+  WHAT       - Verbs (get, list, create, delete) on Resources (pods, secrets)
+  WHERE      - One namespace (Role) OR whole cluster (ClusterRole)
+  LINK       - RoleBinding connects WHO to WHAT
+
+  Without a binding, K8s denies everything (deny-by-default).
+
+--------------------------------------------------------------------------------
+2. THE 4 OBJECTS WORKING TOGETHER
+--------------------------------------------------------------------------------
+
+  ┌─────────────────┐
+  │ ServiceAccount  │  ← WHO am I? (identity for code/pods)
+  │ flask-cicd-     │
+  │ helm2-sa        │
+  └────────┬────────┘
+           │ subjects (left)
+           │
+  ┌────────┴────────┐
+  │   RoleBinding   │  ← THE LINK (binds WHO to WHAT)
+  │ ...binding      │
+  └────────┬────────┘
+           │ roleRef (right)
+           │
+  ┌────────┴────────┐
+  │      Role       │  ← WHAT can I do?
+  │ ...role         │
+  │ - configmaps    │
+  │   get, list     │
+  └─────────────────┘
+
+  Namespace-scoped: Role + RoleBinding
+  Cluster-scoped:   ClusterRole + ClusterRoleBinding
+
+--------------------------------------------------------------------------------
+3. FILES TOUCHED (3 FILES IN THIS STAGE)
+--------------------------------------------------------------------------------
+
+  1. helm/flask-cicd-app/templates/rbac.yaml   ← NEW: SA + Role + RoleBinding
+  2. helm/flask-cicd-app/values.yaml           ← Set serviceAccount.name + rbac.create
+  3. Jenkinsfile (main branch)                  ← Added --set rbac.create=true
+
+--------------------------------------------------------------------------------
+4. rbac.yaml (THE NEW TEMPLATE)
+--------------------------------------------------------------------------------
+
+  {{- if .Values.rbac.create }}
+  apiVersion: v1
+  kind: ServiceAccount
+  metadata:
+    name: {{ include "flask-cicd-app.fullname" . }}-sa
+    namespace: {{ .Release.Namespace }}
+  ---
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: Role
+  metadata:
+    name: {{ include "flask-cicd-app.fullname" . }}-role
+    namespace: {{ .Release.Namespace }}
+  rules:
+    - apiGroups: [""]
+      resources: ["configmaps"]
+      verbs: ["get", "list"]
+  ---
+  apiVersion: rbac.authorization.k8s.io/v1
+  kind: RoleBinding
+  metadata:
+    name: {{ include "flask-cicd-app.fullname" . }}-binding
+    namespace: {{ .Release.Namespace }}
+  subjects:
+    - kind: ServiceAccount
+      name: {{ include "flask-cicd-app.fullname" . }}-sa
+      namespace: {{ .Release.Namespace }}
+  roleRef:
+    kind: Role
+    name: {{ include "flask-cicd-app.fullname" . }}-role
+    apiGroup: rbac.authorization.k8s.io
+  {{- end }}
+
+  All 3 objects in one file. All gated by rbac.create flag.
+
+--------------------------------------------------------------------------------
+5. values.yaml CHANGES (WHY EACH ONE)
+--------------------------------------------------------------------------------
+
+  serviceAccount:
+    create: false                       # chart's built-in SA template stays OFF
+                                        # (we create SA in rbac.yaml instead)
+    name: "flask-cicd-helm2-sa"         # MUST match what rbac.yaml creates
+                                        # so deployment.yaml helper picks it up
+
+  rbac:
+    create: true                        # turn ON our rbac.yaml template
+
+  Three knobs, three jobs:
+    serviceAccount.create  - "Should chart auto-create a basic SA?"  (NO)
+    serviceAccount.name    - "What name should deployment look for?" (our SA)
+    rbac.create            - "Should our rbac.yaml run?"             (YES)
+
+--------------------------------------------------------------------------------
+6. WHY KEEP serviceAccount.create: false?
+--------------------------------------------------------------------------------
+
+  There are TWO places an SA could be created in a Helm chart:
+
+    Option A: Chart's built-in serviceaccount.yaml template
+              (controlled by serviceAccount.create)
+    Option B: Our custom rbac.yaml template
+              (controlled by rbac.create)
+
+  If BOTH were true → both would try to create the SAME SA → Helm error.
+
+  We picked Option B because:
+    - All RBAC pieces (SA + Role + Binding) live in ONE file
+    - Easier to read, easier to enable/disable as a unit
+    - Cleaner architectural separation
+
+--------------------------------------------------------------------------------
+7. deployment.yaml (NO CHANGES NEEDED)
+--------------------------------------------------------------------------------
+
+  Line 30 was already wired:
+    serviceAccountName: {{ include "flask-cicd-app.serviceAccountName" . }}
+
+  The helper "flask-cicd-app.serviceAccountName" in _helpers.tpl:
+    - If .Values.serviceAccount.create is true  → returns fullname
+    - Else                                       → returns .Values.serviceAccount.name
+                                                    OR "default" if name is empty
+
+  Since serviceAccount.create=false AND serviceAccount.name="flask-cicd-helm2-sa"
+  the helper returns "flask-cicd-helm2-sa" -- matching what rbac.yaml creates.
+
+  THE LINK BETWEEN FILES:
+    values.yaml          rbac.yaml                    deployment.yaml
+    ───────────          ─────────                    ───────────────
+    serviceAccount.name  creates SA named             helper reads
+    "flask-cicd-         "flask-cicd-helm2-sa"        serviceAccount.name
+     helm2-sa"           ✓ MATCH ✓                    → uses same name
+
+--------------------------------------------------------------------------------
+8. Jenkinsfile CHANGE (main branch)
+--------------------------------------------------------------------------------
+
+  Added to the helm upgrade --install command:
+    --set rbac.create=true
+
+  Why: ensures every Jenkins CI/CD run keeps RBAC enabled.
+  Without this flag, the next pipeline run would deploy without RBAC.
+
+--------------------------------------------------------------------------------
+9. DEPLOYMENT COMMAND (MANUAL FOR DEMO)
+--------------------------------------------------------------------------------
+
+  helm upgrade flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+    --reuse-values \
+    --set rbac.create=true \
+    --set serviceAccount.name=flask-cicd-helm2-sa \
+    --timeout 180s
+
+  Result: REVISION 13, STATUS: deployed.
+
+--------------------------------------------------------------------------------
+10. VERIFICATION COMMANDS (WITH EXPECTED OUTPUTS)
+--------------------------------------------------------------------------------
+
+  # 1. Confirm the 3 RBAC objects exist
+  kubectl get serviceaccount,role,rolebinding -n helm-lab
+  → serviceaccount/flask-cicd-helm2-sa
+    role.../flask-cicd-helm2-role
+    rolebinding.../flask-cicd-helm2-binding (linked to Role/flask-cicd-helm2-role)
+
+  # 2. Confirm new pods use the new SA
+  kubectl get pods -n helm-lab -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.serviceAccountName}{"\n"}{end}'
+  → flask-cicd-helm2-fdb69774c-n8mp8   flask-cicd-helm2-sa
+    flask-cicd-helm2-fdb69774c-qd682   flask-cicd-helm2-sa
+
+  # 3. Confirm granted permission works
+  kubectl auth can-i list configmaps --as=system:serviceaccount:helm-lab:flask-cicd-helm2-sa -n helm-lab
+  → yes    (matches verbs:[get,list] resources:[configmaps] in our Role)
+
+  # 4. Confirm denied permission is denied
+  kubectl auth can-i delete pods --as=system:serviceaccount:helm-lab:flask-cicd-helm2-sa -n helm-lab
+  → no     (we never granted this; K8s denies by default)
+
+  # 5. Compare with Prometheus (cluster-wide RBAC)
+  kubectl auth can-i list pods --as=system:serviceaccount:monitoring:kube-prom-kube-prometheus-prometheus -n helm-lab
+  → yes    (Prometheus has a ClusterRole + ClusterRoleBinding)
+
+--------------------------------------------------------------------------------
+11. THE 0-BYTES BUG (REAL DEBUG STORY)
+--------------------------------------------------------------------------------
+
+  Initial attempt failed silently. Helm reported "upgrade complete" but no
+  RBAC objects appeared in the cluster. Investigation:
+
+    helm template flask-cicd-helm2 helm/flask-cicd-app -s templates/rbac.yaml
+    → Error: could not find template templates/rbac.yaml in chart
+
+  But the file existed... why "not found"?
+
+    Get-ChildItem templates/ | Format-Table Name, Length
+    → rbac.yaml  0   <-- FILE WAS 0 BYTES
+
+  Root cause: the editor showed content from memory but the file was never
+  saved to disk. Once written properly (38 lines), Helm rendered it correctly.
+
+  Lesson: when Helm silently skips a template, always check Length on disk,
+  not just what the editor shows.
+
+--------------------------------------------------------------------------------
+12. VERBS AND RESOURCES CHEAT SHEET
+--------------------------------------------------------------------------------
+
+  Verbs:
+    get             read one specific object
+    list            read many objects
+    watch           subscribe to changes (used by controllers)
+    create          make new
+    update          replace entirely
+    patch           modify partially
+    delete          remove
+    deletecollection  bulk delete
+    *               all (avoid; violates least privilege)
+
+  Common resources and their apiGroups:
+    pods, services, secrets, configmaps, nodes    →  apiGroups: [""]
+    deployments, replicasets, statefulsets        →  apiGroups: ["apps"]
+    ingresses, networkpolicies                    →  apiGroups: ["networking.k8s.io"]
+    roles, rolebindings                           →  apiGroups: ["rbac.authorization.k8s.io"]
+    prometheusrules, servicemonitors              →  apiGroups: ["monitoring.coreos.com"]
+
+  Find any resource's apiGroup:
+    kubectl api-resources
+
+--------------------------------------------------------------------------------
+13. ROLE vs CLUSTERROLE (QUICK REFERENCE)
+--------------------------------------------------------------------------------
+
+                Role                       ClusterRole
+  Scope         one namespace              entire cluster
+  Pair with     RoleBinding                ClusterRoleBinding
+  Used by       app teams (per namespace)  Prometheus, NGINX Ingress, etc.
+
+  CURVEBALL: RoleBinding CAN bind a ClusterRole. This grants the ClusterRole's
+  permissions but ONLY within the binding's namespace -- useful for reusing
+  built-in ClusterRoles like "view" / "edit" / "admin" per namespace.
+
+--------------------------------------------------------------------------------
+14. SECURITY BEYOND RBAC (FOR INTERVIEW DEPTH)
+--------------------------------------------------------------------------------
+
+  RBAC is ONE slice of K8s security. The big picture:
+
+  NetworkPolicy           Pod-to-pod firewall (e.g., only Flask → MariaDB)
+  Pod Security Standards  Restrict pods (no root, no host network)
+  Secrets at rest         K8s Secrets are base64, not encrypted by default.
+                          Production: Sealed Secrets, Vault, Azure Key Vault
+  Image scanning          Trivy/Snyk scan images for CVEs in CI/CD
+  Admission controllers   OPA / Gatekeeper - block bad YAML before deploy
+  Audit logs              K8s logs every API call (SOC 2, ISO 27001 needs)
+
+--------------------------------------------------------------------------------
+15. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: What is RBAC and why does Kubernetes use it?
+  A: Role-Based Access Control. It answers WHO can do WHAT, WHERE. Without
+     RBAC, anyone (or any pod) could delete production resources. K8s defaults
+     to deny-everything and only allows actions explicitly granted via Roles
+     and RoleBindings -- the principle of least privilege.
+
+  Q: Difference between Role and ClusterRole?
+  A: Role is scoped to one namespace. ClusterRole is cluster-wide. Use Role
+     for application-level permissions. Use ClusterRole for tools that span
+     namespaces like Prometheus or NGINX Ingress Controller. ClusterRoles can
+     also be bound by a RoleBinding to grant cluster-role permissions within
+     a single namespace.
+
+  Q: What's a ServiceAccount and how does a pod use it?
+  A: A ServiceAccount is an identity for pods/code (vs Users which are for
+     humans). When a pod starts, K8s mounts the SA's JWT token at
+     /var/run/secrets/kubernetes.io/serviceaccount/token. The pod sends this
+     token to the K8s API; the API server validates it and looks up
+     RoleBindings to decide what's allowed.
+
+  Q: What does the "default" ServiceAccount allow?
+  A: In modern K8s, nothing. Every namespace gets a "default" SA but it has
+     no RoleBindings, so any API call from it returns 403 Forbidden. Production
+     best practice: always use a named SA per workload.
+
+  Q: How do you debug "Forbidden" errors?
+  A: kubectl auth can-i <verb> <resource> --as=system:serviceaccount:<ns>:<sa>
+     Example: kubectl auth can-i delete pods --as=system:serviceaccount:helm-lab:flask-cicd-helm2-sa
+     If it says "no", check the SA's RoleBindings and ensure the Role grants
+     that verb on that resource.
+
+  Q: Walk me through your RBAC setup in the Flask project.
+  A: I bundled all RBAC pieces in one Helm template (rbac.yaml): a ServiceAccount,
+     a Role allowing only get/list on configmaps, and a RoleBinding linking them.
+     It's gated by rbac.create flag in values.yaml. The deployment.yaml's
+     serviceAccountName field uses a Helm helper that resolves to the same
+     name (flask-cicd-helm2-sa). I verified with kubectl auth can-i -- the SA
+     can list configmaps (granted) but cannot delete pods (not granted).
+
+  Q: What's the principle of least privilege?
+  A: Grant the minimum permissions an identity needs to do its job and nothing
+     more. Prefer Role over ClusterRole. Avoid wildcards (*) in verbs and
+     resources. Use specific resource names where possible.
+
+--------------------------------------------------------------------------------
+16. STAGE 16 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - rbac.yaml created with SA + Role + RoleBinding ✓
+  - values.yaml: serviceAccount.name set to "flask-cicd-helm2-sa" ✓
+  - values.yaml: rbac.create set to true ✓
+  - Jenkinsfile: --set rbac.create=true added ✓
+  - helm upgrade succeeded (revision 13, status: deployed) ✓
+  - kubectl get sa,role,rolebinding -n helm-lab shows the 3 objects ✓
+  - Pods use serviceAccountName: flask-cicd-helm2-sa (not "default") ✓
+  - kubectl auth can-i list configmaps → yes (granted permission) ✓
+  - kubectl auth can-i delete pods → no (denied as expected) ✓
+  - Stage 16 added to notes ✓
+  - Committed and pushed to GitHub ✓
