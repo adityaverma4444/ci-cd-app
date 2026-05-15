@@ -32,7 +32,7 @@ fullnameOverride: flask-cicd-helm2
 serviceAccount:
   # rbac.yaml creates the SA when rbac.create=true, so we keep create=false here
   # to avoid the chart's default serviceaccount.yaml template (we don't have one anyway).
-  create: false
+  create: false                             #Don't let the chart's built-in template create the SA as in the bottom we turned rbac as
   # Automatically mount a ServiceAccount's API credentials?
   automount: true
   # Annotations to add to the service account.
