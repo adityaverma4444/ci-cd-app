@@ -11,8 +11,8 @@ TECH STACK:
   Observe  : Prometheus + Grafana (kube-prometheus-stack)
   Alert    : PrometheusRule + Alertmanager (disabled locally)
   Logs     : Loki + Promtail (loki-stack)
+  IaC      : Terraform (kubernetes + azurerm + helm providers)
   Cloud    : Azure (planned)
-  IaC      : Terraform (planned)
 
 ================================================================================
                          STAGE-BY-STAGE ROADMAP
@@ -35,9 +35,9 @@ TECH STACK:
 [DONE]    Stage 14: Alerting (PrometheusRule)  → absent() FlaskAppDown alert
 [DONE]    Stage 15: Logging (Loki + Promtail)  → Centralized log queries
 [DONE]    Stage 16: RBAC & Security            → ServiceAccount + Role + RoleBinding
+[DONE]    Stage 17: Terraform Basics           → IaC modules + helm_release on tf branch
 
-[NEXT]    Stage 17: Terraform Basics           → IaC for K8s + Azure resources
-[PLAN]    Stage 18: Cloud Basics (Azure)       → AKS, ACR, AZ-104 prep
+[NEXT]    Stage 18: Cloud Basics (Azure)       → AKS, ACR, AZ-104 prep
 [PLAN]    Stage 19: Interview Prep             → Scenario questions, mock interviews
 [PLAN]    Stage 20: Python + SQL + Linux Revn  → Core skills for 2 YOE screening
 
@@ -70,7 +70,7 @@ but worth coming back to when time/resources allow.
   4. DinD TLS cert persistence
        - Hit twice when DinD container was recreated
        - Fix: always use --hostname jenkins-dind so certs match the hostname
-       - Documented in chat, not yet in notes
+       - Full recovery recipe now in Stage 17 notes (section 14)
 
   5. Grafana admin password rotation
        - Currently using auto-generated password from K8s secret
@@ -3862,3 +3862,552 @@ WHAT THIS STAGE DOES:
   - kubectl auth can-i delete pods → no (denied as expected) ✓
   - Stage 16 added to notes ✓
   - Committed and pushed to GitHub ✓
+
+================================================================================
+                    STAGE 17: TERRAFORM BASICS (Infrastructure as Code)
+================================================================================
+
+WHAT THIS STAGE DOES:
+  Until now we created K8s and Helm resources by typing commands
+  (kubectl apply, helm upgrade --install). That is IMPERATIVE - we tell
+  the system every step. Terraform is DECLARATIVE - we describe the END
+  STATE in .tf files, and Terraform figures out what to create / update /
+  delete to reach that state. Result: infrastructure becomes reviewable
+  code, with diffs, history, and one-command teardown.
+
+  We did three things in this stage:
+    1. Learned Terraform fundamentals on Docker Desktop K8s (terraform/k8s).
+    2. Wrote Azure resources for interview reference (terraform/azure).
+    3. On a separate "tf" branch, made Terraform call our existing Helm
+       charts via the helm_release resource (terraform/cluster-tools and
+       terraform/flask-app). This proves the pattern real teams use:
+       Helm authors charts, Terraform owns the release lifecycle.
+
+--------------------------------------------------------------------------------
+1. IMPERATIVE vs DECLARATIVE (THE BIG PICTURE)
+--------------------------------------------------------------------------------
+
+  Imperative (what we did Stage 1-16):
+    helm upgrade --install flask-cicd-helm2 helm/flask-cicd-app -n helm-lab \
+      --set image.tag=build-42 --set ingress.enabled=true ...
+
+    Problem: nobody knows what the cluster has unless they ssh in and check.
+    Drift, missing rollback story, no preview of what will change.
+
+  Declarative (Terraform):
+    Write release.tf describing the END state.
+    Run "terraform plan" -> see exactly what will change.
+    Run "terraform apply" -> Terraform makes it happen.
+    Run "terraform destroy" -> tears it ALL down in one command.
+
+    A file (terraform.tfstate) is the single source of truth: this is what
+    is currently deployed.
+
+--------------------------------------------------------------------------------
+2. INSTALLING TERRAFORM ON WINDOWS
+--------------------------------------------------------------------------------
+
+  1. Download zip from https://developer.hashicorp.com/terraform/install
+  2. Extract terraform.exe to C:\terraform
+  3. Add C:\terraform to PATH (System Properties -> Environment Variables)
+  4. Verify:  terraform version    -> Terraform v1.x.x
+
+  In our PowerShell sessions we sometimes added it to PATH on the fly:
+    $env:Path += ";C:\terraform"
+
+--------------------------------------------------------------------------------
+3. THE FOUR CORE COMMANDS
+--------------------------------------------------------------------------------
+
+  terraform init       Downloads provider plugins (kubernetes, azurerm, helm).
+                       Creates .terraform/ folder. Run once per module folder
+                       and any time providers change.
+
+  terraform plan       Reads .tf files + state file + live infrastructure.
+                       Shows diff: "will create X, will modify Y, will delete Z".
+                       Does NOT change anything. Safe to run anytime.
+
+  terraform apply      Same as plan, then asks "do you want to do this?",
+                       then actually creates / modifies / deletes resources.
+                       Use -auto-approve in CI to skip prompt.
+
+  terraform destroy    Deletes EVERYTHING described in the .tf files.
+                       (Reads state, deletes each resource in reverse
+                       dependency order.) The cleanest "uninstall" possible.
+
+  Daily flow:
+    edit .tf file -> terraform plan -> read diff carefully -> terraform apply
+
+--------------------------------------------------------------------------------
+4. HCL SYNTAX BASICS
+--------------------------------------------------------------------------------
+
+  Resource block:
+    resource "TYPE" "LOCAL_NAME" {
+      attribute1 = "value"
+      attribute2 = 123
+      nested_block {
+        key = "value"
+      }
+    }
+
+  TYPE         = provider + resource (e.g. "kubernetes_namespace")
+  LOCAL_NAME   = your nickname for this resource in the .tf code
+                 (used to reference it from other resources)
+
+  Reference another resource's attribute:
+    namespace = kubernetes_namespace.demo.metadata[0].name
+                 ^^^^^^^^^^^^^^^^^^^^ ^^^^   ^^^^^^^^^^^^^^^
+                 TYPE                 LOCAL  attribute path
+
+  Variables (separate file: variables.tf):
+    variable "image_tag" {
+      type        = string
+      default     = "latest"
+      description = "Image tag to deploy"
+    }
+
+  Use variable: var.image_tag
+  Override at apply time: terraform apply -var "image_tag=build-42"
+  Override via env var:   $env:TF_VAR_image_tag = "build-42"
+
+--------------------------------------------------------------------------------
+5. THE STATE FILE (terraform.tfstate) - WHAT AND WHY
+--------------------------------------------------------------------------------
+
+  After "terraform apply", Terraform writes a JSON file:
+    terraform.tfstate
+    {
+      "resources": [
+        { "type": "kubernetes_namespace", "name": "demo",
+          "instances": [{ "attributes": { "metadata": {...}, "id": "..." } }]
+        },
+        ...
+      ]
+    }
+
+  Why it matters:
+    - Maps "your code resource name" -> "real ID in the cluster".
+    - Lets Terraform answer "is this already created?" without scanning
+      the whole cloud every time.
+    - Drift detection compares state vs live infrastructure.
+
+  Where it should live:
+    - LOCAL (default): in the same folder. Fine for solo learning.
+    - REMOTE BACKEND (production): Azure Storage / S3 / Terraform Cloud.
+      Reason: shared between team + locking + encrypted at rest.
+
+  Never commit terraform.tfstate to git: it can contain secrets.
+  Our .gitignore handles this:
+    .terraform/
+    *.tfstate
+    *.tfstate.*
+    *.tfvars
+
+--------------------------------------------------------------------------------
+6. PROVIDERS - THE PLUGINS THAT KNOW HOW TO TALK TO APIS
+--------------------------------------------------------------------------------
+
+  A provider is a plugin Terraform downloads that knows the API of one
+  platform: AWS, Azure, Kubernetes, Helm, GitHub, etc.
+
+  Declared in provider.tf (or any .tf file):
+
+    terraform {
+      required_providers {
+        kubernetes = { source = "hashicorp/kubernetes", version = "~> 2.23" }
+        azurerm    = { source = "hashicorp/azurerm",    version = "~> 3.85" }
+        helm       = { source = "hashicorp/helm",       version = "~> 2.12" }
+      }
+    }
+
+    provider "kubernetes" {
+      config_path    = "~/.kube/config"
+      config_context = "docker-desktop"
+    }
+
+    provider "helm" {
+      kubernetes {
+        config_path    = "~/.kube/config"
+        config_context = "docker-desktop"
+      }
+    }
+
+  Providers we used in this stage:
+    kubernetes  -> kubernetes_namespace, kubernetes_config_map,
+                   kubernetes_deployment, kubernetes_secret
+    azurerm     -> azurerm_resource_group, azurerm_kubernetes_cluster
+    helm        -> helm_release (this is the magic - section 11)
+
+--------------------------------------------------------------------------------
+7. DEPENDENCIES - HOW TERRAFORM ORDERS RESOURCES
+--------------------------------------------------------------------------------
+
+  Terraform builds a dependency graph automatically from references.
+
+  Example (terraform/k8s/configmap.tf):
+    resource "kubernetes_config_map" "demo_config" {
+      metadata {
+        name      = "demo-config"
+        namespace = kubernetes_namespace.demo.metadata[0].name  ← reference
+      }
+    }
+
+  Because the configmap REFERENCES the namespace, Terraform knows:
+    1. Create namespace first
+    2. Then create configmap
+
+  When you don't have a natural reference but still need ordering:
+    resource "helm_release" "loki_stack" {
+      ...
+      depends_on = [helm_release.kube_prometheus_stack]   ← explicit
+    }
+
+  We used depends_on in cluster-tools/logging.tf to force Loki to install
+  AFTER Grafana exists - exactly the fix from Stage 15's "two default
+  datasources" Grafana CrashLoopBackOff bug. Now it's permanently codified.
+
+--------------------------------------------------------------------------------
+8. PROJECT STRUCTURE - MAIN BRANCH
+--------------------------------------------------------------------------------
+
+  flask-cicd-app/
+  └── terraform/
+      ├── README.md
+      ├── .gitignore
+      ├── k8s/                  ← REAL resources on Docker Desktop K8s
+      │   ├── provider.tf       (only kubernetes provider)
+      │   ├── namespace.tf      (kubernetes_namespace.demo)
+      │   ├── configmap.tf      (kubernetes_config_map.demo_config)
+      │   └── deployment.tf     (kubernetes_deployment.hello_world, NGINX)
+      └── azure/                ← Plan-only / interview reference
+          ├── provider.tf       (only azurerm provider)
+          ├── azure-rg.tf       (azurerm_resource_group.flask_rg)
+          └── azure-aks.tf      (azurerm_kubernetes_cluster.flask_aks)
+
+  WHY split into subfolders (each is its own ROOT MODULE):
+    - Independent state files: damage in one folder cannot affect the other.
+    - Smaller plans = faster + fewer lock conflicts in a team.
+    - Different providers per folder = less plugin download.
+    - In CI/CD: a PR touching terraform/k8s only triggers k8s plan,
+      not Azure plan.
+
+  Run each module:
+    cd terraform/k8s    && terraform init && terraform plan && terraform apply
+    cd terraform/azure  && terraform init && terraform plan   (no apply: no Azure creds)
+
+--------------------------------------------------------------------------------
+9. PROJECT STRUCTURE - tf BRANCH (TERRAFORM-MANAGED HELM)
+--------------------------------------------------------------------------------
+
+  flask-cicd-app/
+  └── terraform/
+      ├── cluster-tools/        ← helm_release for cluster-wide tools
+      │   ├── provider.tf       (kubernetes + helm)
+      │   ├── namespaces.tf     (monitoring, ingress-nginx)
+      │   ├── ingress.tf        (helm_release "ingress-nginx")
+      │   ├── monitoring.tf     (helm_release "kube-prom")
+      │   ├── logging.tf        (helm_release "loki", depends_on Grafana)
+      │   └── outputs.tf
+      └── flask-app/            ← helm_release for our Flask app chart
+          ├── provider.tf       (kubernetes + helm)
+          ├── variables.tf      (image_tag, mariadb_password, etc.)
+          ├── namespace.tf      (helm-lab)
+          ├── secrets.tf        (mariadb-secret)
+          ├── release.tf        (helm_release "flask-cicd-helm2")
+          └── outputs.tf
+
+  k8s/ and azure/ folders are NOT on tf branch - they were learning-only.
+
+--------------------------------------------------------------------------------
+10. THE helm_release PATTERN (HOW TERRAFORM CALLS HELM)
+--------------------------------------------------------------------------------
+
+  helm_release is a Terraform resource that wraps "helm upgrade --install":
+
+    resource "helm_release" "flask_app" {
+      name             = "flask-cicd-helm2"
+      chart            = "../../helm/flask-cicd-app"      ← LOCAL chart path
+      namespace        = "helm-lab"
+      create_namespace = false
+      wait             = true
+      timeout          = 600
+      atomic           = true                              ← auto-rollback on fail
+
+      set {
+        name  = "image.tag"
+        value = var.image_tag
+      }
+
+      set_sensitive {                                      ← never logged
+        name  = "mariadb.auth.rootPassword"
+        value = var.mariadb_password
+      }
+
+      depends_on = [kubernetes_secret.mariadb]
+    }
+
+  Same chart, same Helm release name, same K8s objects in the cluster.
+  Difference is WHO is calling helm:
+    - main branch:  Jenkins shells out to "helm upgrade --install ..."
+    - tf branch:    Jenkins runs "terraform apply", Terraform calls Helm
+
+  Why this pattern is loved by teams:
+    atomic = true   -> automatic helm rollback if any pod fails to come up
+    wait = true     -> blocks until everything is Ready
+    state file      -> "what version is currently deployed" lives in tfstate
+    terraform plan  -> dry-run BEFORE applying changes
+    terraform destroy  -> uninstall the entire stack with one command
+
+  Why we did NOT replace Helm entirely:
+    1. Templating K8s manifests in HCL is painful; Helm is built for it.
+    2. Switching is one line - Terraform calls our existing chart unchanged.
+    3. Real teams: Helm authors charts, Terraform owns release lifecycle.
+
+--------------------------------------------------------------------------------
+11. JENKINSFILE ON tf BRANCH
+--------------------------------------------------------------------------------
+
+  Same Checkout, Install & Test, Docker Build, Docker Push stages as main.
+  The "Deploy with Helm" single stage is replaced with three:
+
+    stage('Terraform Init') {
+      steps {
+        dir("flask-cicd-app/terraform/flask-app") {
+          sh 'terraform init -input=false -no-color'
+        }
+      }
+    }
+
+    stage('Terraform Plan') {
+      steps {
+        dir("flask-cicd-app/terraform/flask-app") {
+          withCredentials([usernamePassword(credentialsId: 'db-creds',
+              usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS')]) {
+            withEnv([
+              "TF_VAR_image_tag=${IMAGE_TAG}",
+              "TF_VAR_image_repo=${REGISTRY_REPO}",
+              "TF_VAR_mariadb_password=${DB_PASS}"
+            ]) {
+              sh 'terraform plan -input=false -out=tfplan'
+            }
+          }
+        }
+      }
+    }
+
+    stage('Terraform Apply') {
+      steps {
+        dir("flask-cicd-app/terraform/flask-app") {
+          sh 'terraform apply -input=false -auto-approve tfplan'
+        }
+      }
+    }
+
+  Key trick: TF_VAR_* environment variables. Terraform automatically picks
+  up any env var named TF_VAR_<varname> and uses it for variable "<varname>".
+  This is how Jenkins credentials reach Terraform without putting them in
+  .tf files (which would land in git).
+
+--------------------------------------------------------------------------------
+12. DRIFT DETECTION (ONE OF TERRAFORM'S BEST FEATURES)
+--------------------------------------------------------------------------------
+
+  Drift = the live infrastructure no longer matches your code.
+  Happens when someone runs kubectl apply or edits resources by hand.
+
+  Demo we did:
+    terraform apply                    # deployment created with replicas=2
+    kubectl scale deploy hello-world -n terraform-demo --replicas=3   # cheating!
+    terraform plan
+    → ~ replicas: 3 -> 2 (this is drift; Terraform wants to set it back)
+
+    terraform apply                    # restores to 2 (the desired state)
+
+  Production lesson: never edit Terraform-managed resources by hand.
+  Always change the .tf file and apply. This is the discipline behind GitOps.
+
+--------------------------------------------------------------------------------
+13. REAL DEBUG STORIES (FOR INTERVIEW)
+--------------------------------------------------------------------------------
+
+  Story 1: "Duplicate resource" error
+    During hands-on we accidentally declared kubernetes_namespace.demo in
+    BOTH provider.tf AND namespace.tf. Terraform error:
+      Error: Duplicate resource "kubernetes_namespace" configuration
+
+    Lesson: Terraform reads ALL .tf files in a folder as ONE module.
+    Each resource block must have a unique TYPE+LOCAL_NAME combination
+    across the entire folder. Fix: deleted the duplicate from provider.tf.
+
+  Story 2: Two default datasources crashed Grafana (Stage 15 callback)
+    Both kube-prometheus-stack and loki-stack tried to register themselves
+    as Grafana's default datasource. Grafana refused to start with the
+    error "Only one datasource per organization can be marked as default".
+
+    Stage 15 fix was manual - patch loki configmap with isDefault=false.
+    Stage 17 fix on tf branch is structural:
+      - cluster-tools/monitoring.tf installs kube-prom (sets up Grafana)
+      - cluster-tools/logging.tf has depends_on = [helm_release.kube_prom]
+        AND set { name = "loki.datasource.isDefault" value = "false" }
+    Now order + flag are codified - no human can forget either step.
+
+  Story 3: helm_release fails because secret missing
+    helm_release.flask_app references mariadb-secret that the chart expects
+    to exist. Without depends_on, Terraform parallelizes both, and the
+    Helm release sometimes started before the secret was ready.
+    Fix: depends_on = [kubernetes_secret.mariadb] forces serialization.
+
+--------------------------------------------------------------------------------
+14. JENKINS DinD RECOVERY RECIPE (BONUS RESCUE)
+--------------------------------------------------------------------------------
+
+  WHAT BREAKS:
+    Jenkins build fails with:
+      dial tcp: lookup jenkins-dind on 127.0.0.11:53: no such host
+
+    Meaning: the jenkins-dind sidecar container is gone. Jenkins still has
+    DOCKER_HOST=tcp://jenkins-dind:2376 baked in but the hostname doesn't
+    resolve to anything.
+
+  ONE-TIME FIX:
+
+    # 0. Verify which container is missing
+    docker ps -a --filter "name=jenkins"
+
+    # 1. If the cert volume has stale certs from a previous dind, wipe it
+    docker run --rm -v jenkins-docker-certs:/c alpine sh -c "rm -rf /c/* /c/.??*"
+
+    # 2. Start dind with the right hostname so its TLS cert includes "jenkins-dind"
+    docker run -d --name jenkins-dind `
+      --hostname jenkins-dind `
+      --restart unless-stopped `
+      --network jenkins `
+      --network-alias docker `
+      --network-alias jenkins-dind `
+      --env DOCKER_TLS_CERTDIR=/certs `
+      --volume jenkins-docker-certs:/certs/client `
+      --volume jenkins-data:/var/jenkins_home `
+      --privileged `
+      docker:dind --storage-driver overlay2
+
+    # 3. Verify Jenkins can talk to dind
+    docker exec my-jenkins docker version
+    → Client + Server both shown (means TLS handshake worked)
+
+  WHY THE HOSTNAME MATTERS:
+    The dind entrypoint generates server TLS certs at startup. The cert's
+    Subject Alternative Names (SAN) come from the container's hostname,
+    network aliases, and DOCKER_HOST env. If "jenkins-dind" is not in the
+    cert SAN list, Jenkins's TLS handshake fails with:
+      "certificate is valid for <container-id>, docker, localhost,
+       not jenkins-dind"
+
+    Fix: --hostname jenkins-dind  +  --network-alias jenkins-dind
+
+--------------------------------------------------------------------------------
+15. INTERVIEW Q&A
+--------------------------------------------------------------------------------
+
+  Q: What is Terraform and why use it?
+  A: Terraform is an Infrastructure-as-Code tool by HashiCorp. We describe
+     the desired end state of cloud / Kubernetes resources in HCL files;
+     Terraform figures out the steps to reach that state. Benefits:
+     reviewable infra in git, dry-run via terraform plan, single-command
+     teardown via destroy, drift detection, and reusable modules.
+
+  Q: Imperative vs Declarative - explain with an example.
+  A: Imperative is "do A, then B, then C": helm upgrade --install ...
+     Declarative is "I want X to exist": resource "helm_release" "x" {...}.
+     With declarative, the tool reads current state and computes diff to
+     desired state. Re-running the same code is idempotent and safe.
+
+  Q: What is the state file and why is it important?
+  A: terraform.tfstate maps your code resources to real-world IDs. It's
+     how Terraform knows "is this already created?" without scanning the
+     whole cloud. In production it lives in a remote backend (S3, Azure
+     Storage, Terraform Cloud) with state locking so two engineers can't
+     apply at the same time. Never commit it to git - it can contain secrets.
+
+  Q: terraform plan vs terraform apply?
+  A: plan reads .tf + state + live infra and shows what apply WOULD do
+     (a dry-run). apply does plan + actually executes the changes. In CI
+     we usually plan -out=tfplan, then apply tfplan to ensure the exact
+     plan that was reviewed is the one that runs.
+
+  Q: How does Terraform decide the order to create things?
+  A: It builds a dependency graph from references. If resource B uses
+     resource_a.attribute, Terraform creates A before B. For ordering
+     without a natural reference, use depends_on = [resource.x].
+
+  Q: What is a provider?
+  A: A plugin that translates Terraform resource blocks into API calls.
+     The kubernetes provider talks to the K8s API; azurerm to Azure ARM;
+     helm to Helm via the Kubernetes API. Declared in required_providers,
+     downloaded on terraform init.
+
+  Q: Walk me through how you used Terraform in the project.
+  A: Two things. On main branch, terraform/k8s creates a learning sandbox
+     (namespace, configmap, deployment) on Docker Desktop K8s, and
+     terraform/azure documents an Azure RG + AKS for reference. On a
+     dedicated tf branch, terraform/cluster-tools installs ingress-nginx,
+     kube-prometheus-stack, and loki-stack via helm_release. terraform/
+     flask-app deploys our Flask Helm chart via helm_release with image
+     tag and DB password injected as TF_VAR_* env vars from Jenkins
+     credentials. The tf branch's Jenkinsfile replaces the imperative
+     "helm upgrade --install" stage with terraform init / plan / apply.
+
+  Q: Why split terraform/ into multiple folders?
+  A: Each folder is an independent root module with its own state.
+     Benefits: smaller blast radius (a mistake in one cannot delete
+     resources in another), faster plans, fewer lock conflicts, less
+     plugin download per module. Pattern matches how teams separate
+     environments (dev / staging / prod) into different state files.
+
+  Q: helm_release vs running helm directly - why prefer Terraform?
+  A: With helm_release we get: terraform plan to preview changes,
+     atomic = true for automatic rollback on failure, the release
+     version recorded in tfstate (single source of truth), and
+     "terraform destroy" to uninstall the entire stack. Helm still
+     authors the chart - we're just changing who calls helm install.
+
+  Q: What is drift and how does Terraform handle it?
+  A: Drift is when the live infrastructure differs from the .tf code
+     (someone ran kubectl edit by hand). terraform plan compares state
+     vs reality and shows the diff. Apply restores the desired state.
+     Production discipline: never edit Terraform-managed resources by
+     hand; always change the code and re-apply.
+
+  Q: How do you pass secrets to Terraform?
+  A: Three good options: (1) TF_VAR_<name> environment variables -
+     this is what we did from Jenkins withCredentials. (2) terraform.tfvars
+     files (gitignored). (3) From a secret store via data source
+     (e.g., data "azurerm_key_vault_secret" "x"). Mark the variable
+     sensitive = true so the value never appears in plan output.
+
+  Q: What's a Terraform module?
+  A: A reusable folder of .tf files that takes inputs (variables) and
+     produces outputs. Calling a module is like calling a function.
+     We treated each subfolder as a root module here, but you can also
+     publish/use modules from the Terraform Registry or git URLs.
+
+--------------------------------------------------------------------------------
+16. STAGE 17 VERIFICATION CHECKLIST
+--------------------------------------------------------------------------------
+  - terraform installed and on PATH (terraform version works) ✓
+  - terraform/k8s folder: 4 .tf files, init + plan + apply succeed ✓
+  - "3 to add, 0 to change, 0 to destroy" plan output matches resources ✓
+  - kubectl get ns terraform-demo shows managed-by=terraform label ✓
+  - terraform destroy cleanly removes all 3 resources ✓
+  - Drift demo: kubectl scale, terraform plan shows the diff ✓
+  - terraform/azure folder: init + validate succeed (no apply, no auth) ✓
+  - .gitignore covers .terraform/, *.tfstate, *.tfvars ✓
+  - main branch commit a0414ec pushed (terraform restructure) ✓
+  - tf branch created, contains cluster-tools/ and flask-app/ ✓
+  - flask-app helm_release validates and references ../../helm chart ✓
+  - cluster-tools depends_on between kube_prom and loki encoded ✓
+  - tf branch Jenkinsfile uses Terraform Init/Plan/Apply stages ✓
+  - tf branch pushed to origin (commits f225ae2 + ec3a821) ✓
+  - jenkins-dind container recovered with correct hostname/cert ✓
+  - Stage 17 added to notes ✓
+  - Roadmap updated: Stage 17 [DONE], Stage 18 [NEXT] ✓
