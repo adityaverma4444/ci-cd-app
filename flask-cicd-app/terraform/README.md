@@ -1,33 +1,34 @@
 # Terraform layout (tf branch)
 
-This branch demonstrates **Terraform managing Helm releases** instead of Jenkins
-running raw `helm upgrade --install` commands. The `main` branch keeps the
-plain helm-direct flow so you can compare the two side by side.
+This branch demonstrates **Terraform managing Helm releases** instead of
+Jenkins running raw `helm upgrade --install` commands.
+
+The `main` branch keeps the plain helm-direct flow plus learning sandboxes
+(`terraform/k8s/`, `terraform/azure/`). Those are intentionally NOT on this
+branch - it stays focused on the real production-style flow.
 
 ```
 terraform/
-├── k8s/             # Plain K8s objects (namespace, configmap, deployment) - learning sandbox
-├── azure/           # Azure RG + AKS - interview / future cloud reference
-├── cluster-tools/   # ★ NEW on tf branch: helm_release for ingress-nginx, kube-prom, loki
-└── flask-app/       # ★ NEW on tf branch: helm_release pointing at ../../helm/flask-cicd-app
+├── cluster-tools/   # helm_release for ingress-nginx, kube-prom, loki
+└── flask-app/       # helm_release pointing at ../../helm/flask-cicd-app
 ```
 
-## Why two new modules?
+## What each module does
 
-| Module | What it replaces | Why split |
+| Module | Replaces | Why |
 |---|---|---|
-| `cluster-tools/` | The manual `helm install` commands from Stage 13/14/15 (and the `infra` branch Jenkinsfile) | Cluster-wide infra changes rarely; separate state = safer. |
-| `flask-app/`     | The `Deploy with Helm` stage in `main` branch's Jenkinsfile | App is deployed every CI build; needs its own state and frequent applies. |
+| `cluster-tools/` | Manual `helm install` of ingress + monitoring + loki (the `infra` branch on main) | Cluster-wide tools change rarely; one shared state for them all. |
+| `flask-app/` | The `Deploy with Helm` stage in `main` branch's Jenkinsfile | App is deployed every CI build; needs its own state. |
 
-## Order of operations (one-time bootstrap)
+## Bootstrap order
 
 ```bash
-# 1. Cluster-wide tools (run once when cluster is fresh)
+# 1. Run once when cluster is fresh
 cd terraform/cluster-tools
 terraform init
 terraform apply -auto-approve
 
-# 2. App deploy (Jenkins runs this on every build)
+# 2. Jenkins runs this on every build
 cd ../flask-app
 terraform init
 terraform apply -auto-approve \
@@ -35,25 +36,25 @@ terraform apply -auto-approve \
   -var "mariadb_password=$DB_PASS"
 ```
 
-## How the Jenkinsfile uses it
+## Jenkinsfile changes vs main
 
-The `tf` branch Jenkinsfile replaces the single `Deploy with Helm` stage with three:
+The `Deploy with Helm` single stage is replaced with three:
 
 | Stage | Command |
 |---|---|
 | Terraform Init  | `terraform init -input=false` |
-| Terraform Plan  | `terraform plan -out=tfplan` (with `TF_VAR_*` env vars from creds) |
+| Terraform Plan  | `terraform plan -out=tfplan` (TF_VAR_* env vars from Jenkins creds) |
 | Terraform Apply | `terraform apply tfplan` |
 
-Result: same Helm release as `main` branch, but now there is a **state file**
-(`terraform.tfstate`) recording exactly what's deployed. Drift detection,
-preview-before-apply, and easy `destroy` come for free.
+Same final result (Flask app + MariaDB in `helm-lab` namespace) but now
+backed by a `terraform.tfstate` file, with `terraform plan` showing diffs
+before apply, and `terraform destroy` cleaning everything in one command.
 
 ## Why we did NOT replace Helm
 
-Helm still owns the **chart templates** (`helm/flask-cicd-app/`). Terraform's
-`helm_release` resource is just a smarter way to call `helm install`. We kept
-both because:
+Helm still owns the **chart templates** (`helm/flask-cicd-app/`).
+Terraform's `helm_release` resource just calls `helm install` for us.
+We kept both because:
 
 1. Templating in HCL is painful for K8s manifests; Helm is built for it.
 2. Switching is one line - Terraform calls our existing chart.
@@ -64,9 +65,9 @@ both because:
 
 | Concern | main branch | tf branch |
 |---|---|---|
-| App deploy | `helm upgrade --install ...` directly in Jenkinsfile | `terraform apply` -> `helm_release` resource |
-| Knows what's deployed? | Whatever's currently in K8s | `terraform.tfstate` (single source of truth) |
-| Preview before deploy | No (helm does it) | Yes (`terraform plan`) |
+| App deploy | `helm upgrade --install ...` directly in Jenkinsfile | `terraform apply` → `helm_release` resource |
+| Knows what's deployed? | Whatever's in K8s right now | `terraform.tfstate` (single source of truth) |
+| Preview before deploy | No | Yes (`terraform plan`) |
 | Rollback on partial failure | Manual `helm rollback` | Automatic (`atomic = true`) |
-| Destroy whole environment | `helm uninstall` per release | `terraform destroy` (one command) |
+| Tear down everything | `helm uninstall` per release | `terraform destroy` (one command) |
 | Drift detection | None | `terraform plan` shows it |
